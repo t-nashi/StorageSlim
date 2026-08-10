@@ -487,3 +487,93 @@ Windows / macOS 両対応で、モダンかつ安定したデスクトップア�
 ### requirements.md 反映要否
 
 反映済み
+
+## D-11 HEIC / HEIF の Windows / macOS 実装制約
+
+- 状態: 決定済み
+- 分類: 実装方針
+- 優先度: 高
+- 決定日: 2026-08-10
+- 決定者: User
+
+### 論点
+
+HEIC / HEIF の読込と `オリジナル形式を維持` 再出力を、Windows / macOS の両方でどこまで初期版仕様として約束するか。
+
+### 選択肢
+
+- 両 OS で無条件に読込 / 再出力可能とみなす
+- 読込は両 OS 対応とし、再出力は build 条件付き機能として扱う
+- 初期版では HEIC / HEIF 再出力自体を対象外にする
+
+### 決定
+
+- HEIC / HEIF の読込は Windows / macOS の両方で初期版対象とする
+- `オリジナル形式を維持` 再出力は、HEIF エンコーダを同梱したビルドに限って提供する
+- エンコーダ未同梱ビルドでは、対象ファイル単位で理由付き失敗を返す
+- したがって HEIC / HEIF 再出力は `無条件保証` とは表記しない
+
+### 理由
+
+- libvips は libheif 経由で HEIF 保存機能を持つ
+- ただし libheif は HEIC encode に codec backend を必要とし、README では `x265` を使う場合 GPL であることが明記されている
+- codec plugin 構成で配布物を分けられるため、再出力は build 条件付き機能として定義するのが最も現実的
+
+### 影響
+
+- 初期版の仕様書と UI に `HEIC / HEIF 再出力は build 条件付き` の注記が必要になる
+- バッチ処理では対象ファイル単位の失敗理由表示が重要になる
+- 配布設計で HEIF encoder backend の同梱方針を決める必要がある
+
+### 保留条件 / 再確認条件
+
+- 実装時に採用する HEIF encoder backend の配布方式が確定した時点で、最終文言を微調整する
+
+### requirements.md 反映要否
+
+反映済み
+
+## D-12 初期版の最終技術構成
+
+- 状態: 決定済み
+- 分類: 技術選定
+- 優先度: 高
+- 決定日: 2026-08-10
+- 決定者: User
+
+### 論点
+
+HEIC / HEIF 制約も含めた上で、初期版の正式構成を `Tauri + libvips 系` で確定してよいか。
+
+### 選択肢
+
+- `Tauri + libvips 系 + libheif ベースの HEIF 対応` を正式採用する
+- `Electron` へ切り替える
+- 形式別に別エンジンを並列採用する
+
+### 決定
+
+- 初期版の正式構成は `Tauri + libvips 系 + libheif ベースの HEIF 対応` とする
+- `Electron` への切り替えは行わない
+- 補助ライブラリは libheif の codec backend または配布補助の範囲でのみ許容する
+- 別系統の画像処理エンジンを並列採用しない
+
+### 理由
+
+- HEIC / HEIF の難所はフレームワーク選定ではなく codec / packaging 条件にある
+- Tauri を Electron に変えても、その制約は本質的には解消しない
+- libvips を中核に据える構成のまま、HEIF backend を内部構成として整理する方が設計と保守の一貫性が高い
+
+### 影響
+
+- 実装は Rust バックエンド中心で進める前提が確定する
+- 配布設計では libvips / libheif / codec backend の同梱方針が必要になる
+- requirements と開発タスクはこの構成を前提に具体化できる
+
+### 保留条件 / 再確認条件
+
+- なし
+
+### requirements.md 反映要否
+
+反映済み
