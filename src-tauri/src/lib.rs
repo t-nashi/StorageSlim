@@ -1,7 +1,9 @@
 use std::{
+    any::Any,
     collections::HashSet,
     fs::{self, File},
     io::BufWriter,
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -236,7 +238,7 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                     .unwrap_or(path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                match inspect_single(path, &root, &relative) {
+                match inspect_single_safe(path, &root, &relative) {
                     Ok(entry) => {
                         if seen.insert(entry.source_path.clone()) {
                             entries.push(entry);
@@ -253,7 +255,7 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| root.to_string_lossy().to_string());
-            match inspect_single(&root, &root, &relative) {
+            match inspect_single_safe(&root, &root, &relative) {
                 Ok(entry) => {
                     if seen.insert(entry.source_path.clone()) {
                         entries.push(entry);
@@ -269,6 +271,10 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
 
     entries.sort_by(|a, b| a.source_path.cmp(&b.source_path));
     Ok(InspectResponse { entries, skipped })
+}
+
+fn inspect_single_safe(path: &Path, root: &Path, relative: &str) -> Result<InputEntry> {
+    catch_task_panic("inspection", || inspect_single(path, root, relative))
 }
 
 fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry> {
@@ -322,6 +328,26 @@ fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry
     })
 }
 
+fn catch_task_panic<T, F>(label: &str, task: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    match catch_unwind(AssertUnwindSafe(task)) {
+        Ok(result) => result,
+        Err(payload) => Err(anyhow!("{label} panicked: {}", panic_payload_to_string(payload))),
+    }
+}
+
+fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 fn process_batch_impl(window: Window, request: ProcessRequest) -> Result<ProcessResponse> {
     let output_root = resolve_output_root(&request.settings)?;
     fs::create_dir_all(&output_root)
@@ -340,20 +366,21 @@ fn process_batch_impl(window: Window, request: ProcessRequest) -> Result<Process
             },
         );
 
-        let result = process_one(entry, &request.settings, &output_root).unwrap_or_else(|error| ProcessResultItem {
-            source_path: entry.source_path.clone(),
-            output_path: None,
-            success: false,
-            output_format: None,
-            original_size: entry.file_size,
-            optimized_size: None,
-            saved_size: None,
-            saved_percent: None,
-            width: entry.width,
-            height: entry.height,
-            reason: Some(error.to_string()),
-            warnings: Vec::new(),
-        });
+        let result = catch_task_panic("processing", || process_one(entry, &request.settings, &output_root))
+            .unwrap_or_else(|error| ProcessResultItem {
+                source_path: entry.source_path.clone(),
+                output_path: None,
+                success: false,
+                output_format: None,
+                original_size: entry.file_size,
+                optimized_size: None,
+                saved_size: None,
+                saved_percent: None,
+                width: entry.width,
+                height: entry.height,
+                reason: Some(error.to_string()),
+                warnings: Vec::new(),
+            });
         results.push(result);
 
         let _ = window.emit(
