@@ -9,6 +9,7 @@ import type {
   InputEntry,
   InspectResponse,
   OutputFormat,
+  OutputMode,
   ProcessResponse,
   ResizeMode,
 } from "./types";
@@ -21,7 +22,7 @@ const fileFilters = [
 ];
 
 const outputOptions: Array<{ value: OutputFormat; label: string }> = [
-  { value: "original", label: "オリジナル形式を維持" },
+  { value: "original", label: "オリジナルを維持" },
   { value: "gif", label: "GIF" },
   { value: "jpeg", label: "JPEG" },
   { value: "png", label: "PNG" },
@@ -89,7 +90,7 @@ function outputDisabledReason(entries: InputEntry[], output: OutputFormat): stri
   }
   for (const entry of entries) {
     if (!outputAllowed(entry, output)) {
-      return "アニメーション GIF を含むため、この出力形式は使えません。";
+      return "アニメーション GIF を含むため、この出力形式は選択できません。";
     }
   }
   return null;
@@ -252,19 +253,36 @@ function App() {
     }
   }
 
+  function updateOutputMode(outputMode: OutputMode) {
+    setSettings((current) => ({
+      ...current,
+      outputMode,
+    }));
+  }
+
+  function renderOutputHint() {
+    if (settings.outputMode === "desktopDefault") {
+      return "既定の出力先を使用します。";
+    }
+    if (settings.customOutputDir) {
+      return settings.customOutputDir;
+    }
+    return "ユーザー指定フォルダを選択してください。";
+  }
+
   return (
     <main className="app-shell">
       <section className="hero-panel">
         <div>
           <p className="eyebrow">StorageSlim MVP</p>
-          <h1>ローカル完結の画像最適化ワークベンチ</h1>
+          <h1>画像最適化ワークベンチ</h1>
           <p className="hero-copy">
-            リサイズ、品質調整、フォーマット変換、タイムスタンプ補正を 1 画面でまとめて扱います。
+            リサイズ、形式変換、圧縮、タイムスタンプ制御を 1 画面にまとめ、複数ファイルを素早く整理します。
           </p>
         </div>
         <div className="hero-stats">
           <div>
-            <span>投入ファイル</span>
+            <span>入力ファイル</span>
             <strong>{entries.length}</strong>
           </div>
           <div>
@@ -279,7 +297,7 @@ function App() {
           <div className="drop-header">
             <div>
               <h2>入力</h2>
-              <p>ドラッグ&ドロップ、複数ファイル選択、フォルダ投入に対応します。</p>
+              <p>ドラッグ&ドロップ、複数ファイル選択、フォルダ選択に対応します。</p>
             </div>
             <div className="drop-actions">
               <button type="button" onClick={pickFiles}>
@@ -298,7 +316,7 @@ function App() {
             <small>対応: GIF / JPEG / PNG / WebP / AVIF / HEIC / HEIF</small>
           </div>
           {skipped.length > 0 ? (
-            <div className="notice warning">対応外または読み取れなかった項目: {skipped.length} 件</div>
+            <div className="notice warning">読み込めなかった項目: {skipped.length} 件</div>
           ) : null}
         </div>
 
@@ -306,12 +324,12 @@ function App() {
           <div className="panel-header">
             <div>
               <h2>設定</h2>
-              <p>出力先、品質、メタデータ、タイムスタンプをまとめて定義します。</p>
+              <p>出力先、品質、メタデータ、タイムスタンプをここで定義します。</p>
             </div>
           </div>
 
           <div className="field-grid">
-            <label>
+            <div className="field">
               <span>出力形式</span>
               <select
                 value={settings.outputFormat}
@@ -333,37 +351,37 @@ function App() {
                 ))}
               </select>
               <small>{allowedOutputs.get(settings.outputFormat) ?? "現在の入力構成で有効です。"}</small>
-            </label>
+            </div>
 
-            <label>
+            <div className="field">
               <span>出力先</span>
               <select
                 value={settings.outputMode}
-                onChange={(event) =>
-                  setSettings((current) => ({
-                    ...current,
-                    outputMode: event.currentTarget.value as BatchSettings["outputMode"],
-                  }))
-                }
+                onChange={(event) => updateOutputMode(event.currentTarget.value as OutputMode)}
               >
                 <option value="desktopDefault">Desktop/@StorageSlim/output</option>
                 <option value="custom">ユーザー指定フォルダ</option>
               </select>
-            </label>
+              <small>{settings.outputMode === "custom" ? "指定フォルダへ出力します。" : "既定フォルダへ出力します。"}</small>
+            </div>
 
-            {settings.outputMode === "custom" ? (
-              <label className="full-width">
-                <span>カスタム出力先</span>
-                <div className="inline-picker">
-                  <input value={settings.customOutputDir ?? ""} readOnly placeholder="未選択" />
-                  <button type="button" onClick={pickOutputFolder}>
-                    選択
-                  </button>
-                </div>
-              </label>
-            ) : null}
+            <div className="field full-width">
+              <span>カスタム出力先</span>
+              <div className="inline-picker">
+                <input
+                  value={settings.outputMode === "custom" ? settings.customOutputDir ?? "" : ""}
+                  readOnly
+                  disabled={settings.outputMode !== "custom"}
+                  placeholder="未選択"
+                />
+                <button type="button" className="ghost" onClick={pickOutputFolder}>
+                  選択
+                </button>
+              </div>
+              <small>{renderOutputHint()}</small>
+            </div>
 
-            <label>
+            <div className="field">
               <span>リサイズ基準</span>
               <select
                 value={settings.resize.mode}
@@ -378,13 +396,13 @@ function App() {
                 }
               >
                 <option value="none">変更しない</option>
-                <option value="width">幅指定</option>
-                <option value="height">高さ指定</option>
-                <option value="longEdge">長辺指定</option>
+                <option value="width">幅を指定</option>
+                <option value="height">高さを指定</option>
+                <option value="longEdge">長辺を指定</option>
               </select>
-            </label>
+            </div>
 
-            <label>
+            <div className="field">
               <span>リサイズ値</span>
               <input
                 type="number"
@@ -401,10 +419,14 @@ function App() {
                   }))
                 }
               />
-            </label>
+              <small>{settings.resize.mode === "none" ? "未使用" : "ピクセル単位で指定します。"}</small>
+            </div>
 
-            <label>
-              <span>JPEG 品質</span>
+            <div className="field slider-field">
+              <div className="field-heading">
+                <span>JPEG 品質</span>
+                <strong>{settings.quality.jpegQuality}</strong>
+              </div>
               <input
                 type="range"
                 min={1}
@@ -420,11 +442,13 @@ function App() {
                   }))
                 }
               />
-              <small>{settings.quality.jpegQuality}</small>
-            </label>
+            </div>
 
-            <label>
-              <span>WebP 品質</span>
+            <div className="field slider-field">
+              <div className="field-heading">
+                <span>WebP 品質</span>
+                <strong>{settings.quality.webpQuality}</strong>
+              </div>
               <input
                 type="range"
                 min={1}
@@ -440,11 +464,13 @@ function App() {
                   }))
                 }
               />
-              <small>{settings.quality.webpQuality}</small>
-            </label>
+            </div>
 
-            <label>
-              <span>AVIF 品質</span>
+            <div className="field slider-field">
+              <div className="field-heading">
+                <span>AVIF 品質</span>
+                <strong>{settings.quality.avifQuality}</strong>
+              </div>
               <input
                 type="range"
                 min={1}
@@ -460,11 +486,13 @@ function App() {
                   }))
                 }
               />
-              <small>{settings.quality.avifQuality}</small>
-            </label>
+            </div>
 
-            <label>
-              <span>PNG 圧縮レベル</span>
+            <div className="field slider-field">
+              <div className="field-heading">
+                <span>PNG 圧縮レベル</span>
+                <strong>{settings.quality.pngCompression}</strong>
+              </div>
               <input
                 type="range"
                 min={0}
@@ -480,11 +508,13 @@ function App() {
                   }))
                 }
               />
-              <small>{settings.quality.pngCompression}</small>
-            </label>
+            </div>
 
-            <label>
-              <span>GIF 色数</span>
+            <div className="field slider-field">
+              <div className="field-heading">
+                <span>GIF 色数</span>
+                <strong>{settings.quality.gifColors}</strong>
+              </div>
               <input
                 type="range"
                 min={2}
@@ -500,10 +530,9 @@ function App() {
                   }))
                 }
               />
-              <small>{settings.quality.gifColors}</small>
-            </label>
+            </div>
 
-            <label>
+            <div className="field">
               <span>メタデータ</span>
               <select
                 value={settings.metadataMode}
@@ -517,55 +546,58 @@ function App() {
                 <option value="strip">削除する</option>
                 <option value="keep">保持する</option>
               </select>
-              <small>保持はこの MVP ビルドではベストエフォートです。</small>
-            </label>
+              <small>保持は MVP ではベストエフォートです。</small>
+            </div>
 
-            <div className="checkbox-cluster full-width">
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={settings.timestamps.preserveCreationTime}
-                  onChange={(event) =>
-                    setSettings((current) => ({
-                      ...current,
-                      timestamps: {
-                        ...current.timestamps,
-                        preserveCreationTime: event.currentTarget.checked,
-                      },
-                    }))
-                  }
-                />
-                <span>作成日時を引き継ぐ</span>
-              </label>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={settings.timestamps.preserveLastWriteTime}
-                  onChange={(event) =>
-                    setSettings((current) => ({
-                      ...current,
-                      timestamps: {
-                        ...current.timestamps,
-                        preserveLastWriteTime: event.currentTarget.checked,
-                      },
-                    }))
-                  }
-                />
-                <span>更新日時を引き継ぐ</span>
-              </label>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={settings.overwrite}
-                  onChange={(event) =>
-                    setSettings((current) => ({
-                      ...current,
-                      overwrite: event.currentTarget.checked,
-                    }))
-                  }
-                />
-                <span>上書きを許可する</span>
-              </label>
+            <div className="field full-width">
+              <span>タイムスタンプ</span>
+              <div className="checkbox-cluster">
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={settings.timestamps.preserveCreationTime}
+                    onChange={(event) =>
+                      setSettings((current) => ({
+                        ...current,
+                        timestamps: {
+                          ...current.timestamps,
+                          preserveCreationTime: event.currentTarget.checked,
+                        },
+                      }))
+                    }
+                  />
+                  <span>作成日時を引き継ぐ</span>
+                </label>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={settings.timestamps.preserveLastWriteTime}
+                    onChange={(event) =>
+                      setSettings((current) => ({
+                        ...current,
+                        timestamps: {
+                          ...current.timestamps,
+                          preserveLastWriteTime: event.currentTarget.checked,
+                        },
+                      }))
+                    }
+                  />
+                  <span>更新日時を引き継ぐ</span>
+                </label>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={settings.overwrite}
+                    onChange={(event) =>
+                      setSettings((current) => ({
+                        ...current,
+                        overwrite: event.currentTarget.checked,
+                      }))
+                    }
+                  />
+                  <span>上書きを許可する</span>
+                </label>
+              </div>
             </div>
           </div>
 
@@ -582,11 +614,11 @@ function App() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel table-panel">
         <div className="panel-header">
           <div>
-            <h2>投入一覧</h2>
-            <p>フォルダ投入時は再帰探索し、出力でも構造を維持します。</p>
+            <h2>入力一覧</h2>
+            <p>フォルダ投入時の相対構造も保持し、形式ごとの制約を表示します。</p>
           </div>
         </div>
         <div className="table-scroll">
@@ -597,7 +629,7 @@ function App() {
                 <th>形式</th>
                 <th>寸法</th>
                 <th>サイズ</th>
-                <th>備考</th>
+                <th>状態</th>
               </tr>
             </thead>
             <tbody>
@@ -622,7 +654,7 @@ function App() {
                     <td>
                       <div className="tag-list">
                         {entry.animated ? <span className="tag accent">animation</span> : null}
-                        {!entry.runtimeSupported ? <span className="tag warning">runtime制約</span> : null}
+                        {!entry.runtimeSupported ? <span className="tag warning">runtime 制約</span> : null}
                         {entry.warnings.map((warning) => (
                           <span key={warning} className="tag subtle">
                             {warning}
@@ -643,7 +675,7 @@ function App() {
           <div className="panel-header">
             <div>
               <h2>進捗</h2>
-              <p>1 件失敗しても残りの処理を継続します。</p>
+              <p>1 件ずつ処理し、現在の処理対象を表示します。</p>
             </div>
           </div>
           <div className="progress-meta">
@@ -676,11 +708,11 @@ function App() {
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel results-panel">
           <div className="panel-header">
             <div>
               <h2>結果</h2>
-              <p>Original size / Optimized size / Saved size を一覧表示します。</p>
+              <p>Original / Optimized / Saved を一覧表示します。</p>
             </div>
           </div>
           <div className="table-scroll">
@@ -699,7 +731,7 @@ function App() {
                 {results.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="empty-cell">
-                      まだ実行結果がありません。
+                      まだ処理結果がありません。
                     </td>
                   </tr>
                 ) : (
