@@ -64,7 +64,7 @@ fn inspect_repo_samples_reports_expected_flags() {
 
     assert!(by_name["sample-animated.gif"].animated);
     assert!(!by_name["sample-static.gif"].animated);
-    assert!(by_name["sample-avif.avif"].runtime_supported);
+    assert!(!by_name["sample-avif.avif"].runtime_supported);
     assert!(by_name["sample-heic.heic"].runtime_supported);
     assert!(by_name["sample-heif.heif"].runtime_supported);
     assert!(by_name["sample-photo.jpg"].width.is_some());
@@ -89,7 +89,7 @@ fn inspect_desktop_samples_reports_expected_flags() {
 
     assert!(by_name["sample-animated.gif"].animated);
     assert!(!by_name["sample-static.gif"].animated);
-    assert!(by_name["sample-avif.avif"].runtime_supported);
+    assert!(!by_name["sample-avif.avif"].runtime_supported);
     assert!(by_name["sample-heic.heic"].runtime_supported);
     assert!(by_name["sample-heif.heif"].runtime_supported);
     assert!(by_name["sample-photo.jpg"].width.is_some());
@@ -115,7 +115,7 @@ fn repo_samples_process_or_fail_as_expected() {
     assert!(outcomes["sample-photo.jpg"].as_ref().is_ok());
     assert!(outcomes["sample-graphic.png"].as_ref().is_ok());
     assert!(outcomes["sample-webp.webp"].as_ref().is_ok());
-    assert!(outcomes["sample-avif.avif"].as_ref().is_ok());
+    assert!(outcomes["sample-avif.avif"].as_ref().is_err());
     assert!(outcomes["sample-static.gif"].as_ref().is_ok());
     assert!(outcomes["sample-animated.gif"].as_ref().is_ok());
     assert!(outcomes["sample-heic.heic"].as_ref().is_ok());

@@ -32,7 +32,4 @@ tauri-plugin-opener = "2"
 walkdir = "2"
 webp = "0.3"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
-rgb = "0.8"
-zenavif = "0.1"
-zenpixels = "0.2"
 tauri-plugin-fs = "2.5.1"

@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Window};
 use walkdir::WalkDir;
 use webp::Encoder as WebpEncoder;
-use zenpixels::PixelDescriptor;
 
 #[cfg(windows)]
 use std::{
@@ -301,8 +300,8 @@ fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry
             (Some(image.width()), Some(image.height()), false, true)
         }
         InputFormat::Avif => {
-            let image = decode_avif_image(path)?;
-            (Some(image.width()), Some(image.height()), false, true)
+            warnings.push("AVIF 入力はこのビルドでは一時的に無効化しています。".to_string());
+            (None, None, false, false)
         }
         _ => {
             let (w, h) = image::image_dimensions(path)
@@ -584,7 +583,7 @@ fn encode_static_gif(image: &RgbaImage, output_path: &Path) -> Result<()> {
 fn decode_input_image(entry: &InputEntry) -> Result<DynamicImage> {
     match entry.format {
         InputFormat::Heic | InputFormat::Heif => decode_heif_image(Path::new(&entry.source_path)),
-        InputFormat::Avif => decode_avif_image(Path::new(&entry.source_path)),
+        InputFormat::Avif => Err(anyhow!("このビルドでは AVIF 入力の読込を一時停止しています。")),
         _ => {
             let bytes = fs::read(&entry.source_path)?;
             image::load_from_memory_with_format(&bytes, image_format_from_input(&entry.format)?)
@@ -594,9 +593,14 @@ fn decode_input_image(entry: &InputEntry) -> Result<DynamicImage> {
 }
 
 fn decode_avif_image(path: &Path) -> Result<DynamicImage> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read AVIF file: {}", path.display()))?;
-    let decoded = zenavif::decode(&bytes).with_context(|| format!("failed to decode AVIF image: {}", path.display()))?;
-    dynamic_image_from_zenavif(&decoded)
+    heif_oxide::decode_file(path)
+        .with_context(|| format!("failed to decode AVIF image: {}", path.display()))
+        .and_then(|decoded| {
+            let rgba = decoded.to_rgba8();
+            let image = RgbaImage::from_raw(decoded.width, decoded.height, rgba)
+                .ok_or_else(|| anyhow!("failed to materialize AVIF RGBA buffer"))?;
+            Ok(DynamicImage::ImageRgba8(image))
+        })
 }
 
 fn decode_heif_image(path: &Path) -> Result<DynamicImage> {
@@ -605,74 +609,6 @@ fn decode_heif_image(path: &Path) -> Result<DynamicImage> {
     let rgba = decoded.to_rgba8();
     let image = RgbaImage::from_raw(decoded.width, decoded.height, rgba)
         .ok_or_else(|| anyhow!("failed to materialize HEIC / HEIF RGBA buffer"))?;
-    Ok(DynamicImage::ImageRgba8(image))
-}
-
-fn dynamic_image_from_zenavif(buffer: &zenavif::PixelBuffer) -> Result<DynamicImage> {
-    let width = buffer.width() as u32;
-    let height = buffer.height() as u32;
-    let descriptor = buffer.descriptor();
-
-    let rgba = if descriptor.layout_compatible(PixelDescriptor::RGBA8) {
-        let image = buffer
-            .try_as_imgref::<rgb::Rgba<u8>>()
-            .ok_or_else(|| anyhow!("failed to read AVIF RGBA8 pixels"))?;
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
-        for row in image.rows() {
-            for pixel in row {
-                out.extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
-            }
-        }
-        out
-    } else if descriptor.layout_compatible(PixelDescriptor::RGBA16) {
-        let image = buffer
-            .try_as_imgref::<rgb::Rgba<u16>>()
-            .ok_or_else(|| anyhow!("failed to read AVIF RGBA16 pixels"))?;
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
-        for row in image.rows() {
-            for pixel in row {
-                out.extend_from_slice(&[
-                    (pixel.r >> 8) as u8,
-                    (pixel.g >> 8) as u8,
-                    (pixel.b >> 8) as u8,
-                    (pixel.a >> 8) as u8,
-                ]);
-            }
-        }
-        out
-    } else if descriptor.layout_compatible(PixelDescriptor::RGB8) {
-        let image = buffer
-            .try_as_imgref::<rgb::Rgb<u8>>()
-            .ok_or_else(|| anyhow!("failed to read AVIF RGB8 pixels"))?;
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
-        for row in image.rows() {
-            for pixel in row {
-                out.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 255]);
-            }
-        }
-        out
-    } else if descriptor.layout_compatible(PixelDescriptor::RGB16) {
-        let image = buffer
-            .try_as_imgref::<rgb::Rgb<u16>>()
-            .ok_or_else(|| anyhow!("failed to read AVIF RGB16 pixels"))?;
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
-        for row in image.rows() {
-            for pixel in row {
-                out.extend_from_slice(&[
-                    (pixel.r >> 8) as u8,
-                    (pixel.g >> 8) as u8,
-                    (pixel.b >> 8) as u8,
-                    255,
-                ]);
-            }
-        }
-        out
-    } else {
-        return Err(anyhow!("unsupported AVIF pixel layout"));
-    };
-
-    let image = RgbaImage::from_raw(width, height, rgba)
-        .ok_or_else(|| anyhow!("failed to materialize AVIF RGBA buffer"))?;
     Ok(DynamicImage::ImageRgba8(image))
 }
 
