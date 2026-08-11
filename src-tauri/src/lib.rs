@@ -22,9 +22,13 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Window};
 use walkdir::WalkDir;
 use webp::Encoder as WebpEncoder;
+use zenpixels::PixelDescriptor;
 
 #[cfg(windows)]
-use std::{fs::OpenOptions, os::windows::{fs::MetadataExt, io::AsRawHandle}};
+use std::{
+    fs::OpenOptions,
+    os::windows::{fs::MetadataExt, io::AsRawHandle},
+};
 #[cfg(windows)]
 use windows_sys::Win32::{Foundation::FILETIME, Storage::FileSystem::SetFileTime};
 
@@ -73,7 +77,14 @@ struct InputEntry {
 #[serde(rename_all = "camelCase")]
 struct InspectResponse {
     entries: Vec<InputEntry>,
-    skipped: Vec<String>,
+    skipped: Vec<SkippedItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkippedItem {
+    path: String,
+    reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +195,13 @@ fn process_batch(window: Window, request: ProcessRequest) -> Result<ProcessRespo
     process_batch_impl(window, request).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn get_default_output_dir() -> Result<String, String> {
+    default_output_root()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|error| error.to_string())
+}
+
 fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
     let mut entries = Vec::new();
     let mut skipped = Vec::new();
@@ -192,7 +210,10 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
     for raw_path in paths {
         let root = PathBuf::from(&raw_path);
         if !root.exists() {
-            skipped.push(raw_path);
+            skipped.push(SkippedItem {
+                path: raw_path,
+                reason: "パスが存在しません。".to_string(),
+            });
             continue;
         }
 
@@ -213,7 +234,10 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                             entries.push(entry);
                         }
                     }
-                    Err(_) => skipped.push(path.to_string_lossy().to_string()),
+                    Err(error) => skipped.push(SkippedItem {
+                        path: path.to_string_lossy().to_string(),
+                        reason: error.to_string(),
+                    }),
                 }
             }
         } else {
@@ -227,7 +251,10 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                         entries.push(entry);
                     }
                 }
-                Err(_) => skipped.push(raw_path),
+                Err(error) => skipped.push(SkippedItem {
+                    path: raw_path,
+                    reason: error.to_string(),
+                }),
             }
         }
     }
@@ -255,8 +282,13 @@ fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry
             (Some(gif_width), Some(gif_height), frames > 1, true)
         }
         InputFormat::Heic | InputFormat::Heif => {
-            warnings.push("このビルドでは HEIC / HEIF の読込は未対応です。".to_string());
-            (None, None, false, false)
+            let image = decode_heif_image(path)?;
+            warnings.push("HEIC / HEIF は外部 codec 経由で読込します。".to_string());
+            (Some(image.width()), Some(image.height()), false, true)
+        }
+        InputFormat::Avif => {
+            let image = decode_avif_image(path)?;
+            (Some(image.width()), Some(image.height()), false, true)
         }
         _ => {
             let (w, h) = image::image_dimensions(path)
@@ -330,7 +362,7 @@ fn process_batch_impl(window: Window, request: ProcessRequest) -> Result<Process
 }
 
 fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path) -> Result<ProcessResultItem> {
-    let output_format = resolve_output_format(entry, settings.output_format)?;
+    let output_format = resolve_output_format(entry, settings.output_format);
     let output_path = build_output_path(entry, output_root, output_format, settings.overwrite)?;
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
@@ -339,10 +371,12 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
 
     let mut warnings = Vec::new();
     if matches!(settings.metadata_mode, MetadataMode::Keep) {
-        warnings.push("メタデータ保持はこの MVP ビルドでは未対応です。".to_string());
+        warnings.push("メタデータ保持はこの MVP ビルドではベストエフォートです。".to_string());
     }
 
-    if entry.animated {
+    if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) && output_format == OutputFormat::Original {
+        process_heif_original_copy(entry, settings, &output_path, &mut warnings)?;
+    } else if entry.animated {
         if output_format != OutputFormat::Gif {
             return Err(anyhow!(
                 "アニメーション GIF は GIF 以外の形式へ変換できません。"
@@ -362,13 +396,14 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
     } else {
         (saved_size as f64 / entry.file_size as f64) * 100.0
     };
-    let (width, height) = image::image_dimensions(&output_path).unwrap_or((0, 0));
+    let (width, height) = read_output_dimensions(entry, output_format, &output_path)
+        .unwrap_or((entry.width.unwrap_or(0), entry.height.unwrap_or(0)));
 
     Ok(ProcessResultItem {
         source_path: entry.source_path.clone(),
         output_path: Some(output_path.to_string_lossy().to_string()),
         success: true,
-        output_format: Some(output_format_label(output_format).to_string()),
+        output_format: Some(output_format_label(entry, output_format).to_string()),
         original_size: entry.file_size,
         optimized_size: Some(optimized_size),
         saved_size: Some(saved_size),
@@ -386,18 +421,7 @@ fn process_static_image(
     output_format: OutputFormat,
     output_path: &Path,
 ) -> Result<()> {
-    match entry.format {
-        InputFormat::Heic | InputFormat::Heif => {
-            return Err(anyhow!(
-                "このビルドには HEIC / HEIF の decoder が含まれていません。"
-            ));
-        }
-        _ => {}
-    }
-
-    let bytes = fs::read(&entry.source_path)?;
-    let image = image::load_from_memory_with_format(&bytes, image_format_from_input(&entry.format)?)
-        .context("failed to decode image")?;
+    let image = decode_input_image(entry)?;
     let resized = resize_dynamic_image(image, &settings.resize);
 
     match output_format {
@@ -452,6 +476,27 @@ fn process_static_image(
     Ok(())
 }
 
+fn process_heif_original_copy(
+    entry: &InputEntry,
+    settings: &BatchSettings,
+    output_path: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    if !matches!(settings.resize.mode, ResizeMode::None) {
+        return Err(anyhow!(
+            "HEIC / HEIF のオリジナル維持出力ではリサイズ未対応です。別形式へ変換してください。"
+        ));
+    }
+
+    if matches!(settings.metadata_mode, MetadataMode::Strip) {
+        warnings.push("HEIC / HEIF のオリジナル維持出力ではメタデータ削除は未対応です。".to_string());
+    }
+
+    warnings.push("HEIC / HEIF のオリジナル維持出力は再圧縮せずコピーします。".to_string());
+    fs::copy(&entry.source_path, output_path)?;
+    Ok(())
+}
+
 fn process_animated_gif(entry: &InputEntry, settings: &BatchSettings, output_path: &Path) -> Result<()> {
     let file = File::open(&entry.source_path)?;
     let mut decoder = DecodeOptions::new();
@@ -501,33 +546,140 @@ fn encode_static_gif(image: &RgbaImage, output_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn resolve_output_root(settings: &BatchSettings) -> Result<PathBuf> {
-    match settings.output_mode {
-        OutputMode::DesktopDefault => {
-            let desktop = desktop_dir().ok_or_else(|| anyhow!("desktop directory not available"))?;
-            Ok(desktop.join("@StorageSlim").join("output"))
+fn decode_input_image(entry: &InputEntry) -> Result<DynamicImage> {
+    match entry.format {
+        InputFormat::Heic | InputFormat::Heif => decode_heif_image(Path::new(&entry.source_path)),
+        InputFormat::Avif => decode_avif_image(Path::new(&entry.source_path)),
+        _ => {
+            let bytes = fs::read(&entry.source_path)?;
+            image::load_from_memory_with_format(&bytes, image_format_from_input(&entry.format)?)
+                .context("failed to decode image")
         }
-        OutputMode::Custom => settings
-            .custom_output_dir
-            .as_ref()
-            .map(PathBuf::from)
-            .ok_or_else(|| anyhow!("custom output directory is not selected")),
     }
 }
 
-fn resolve_output_format(entry: &InputEntry, requested: OutputFormat) -> Result<OutputFormat> {
+fn decode_avif_image(path: &Path) -> Result<DynamicImage> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read AVIF file: {}", path.display()))?;
+    let decoded = zenavif::decode(&bytes).with_context(|| format!("failed to decode AVIF image: {}", path.display()))?;
+    dynamic_image_from_zenavif(&decoded)
+}
+
+fn decode_heif_image(path: &Path) -> Result<DynamicImage> {
+    let decoded = heif_oxide::decode_file(path)
+        .with_context(|| format!("failed to decode HEIC / HEIF image: {}", path.display()))?;
+    let rgba = decoded.to_rgba8();
+    let image = RgbaImage::from_raw(decoded.width, decoded.height, rgba)
+        .ok_or_else(|| anyhow!("failed to materialize HEIC / HEIF RGBA buffer"))?;
+    Ok(DynamicImage::ImageRgba8(image))
+}
+
+fn dynamic_image_from_zenavif(buffer: &zenavif::PixelBuffer) -> Result<DynamicImage> {
+    let width = buffer.width() as u32;
+    let height = buffer.height() as u32;
+    let descriptor = buffer.descriptor();
+
+    let rgba = if descriptor.layout_compatible(PixelDescriptor::RGBA8) {
+        let image = buffer
+            .try_as_imgref::<rgb::Rgba<u8>>()
+            .ok_or_else(|| anyhow!("failed to read AVIF RGBA8 pixels"))?;
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for row in image.rows() {
+            for pixel in row {
+                out.extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
+            }
+        }
+        out
+    } else if descriptor.layout_compatible(PixelDescriptor::RGBA16) {
+        let image = buffer
+            .try_as_imgref::<rgb::Rgba<u16>>()
+            .ok_or_else(|| anyhow!("failed to read AVIF RGBA16 pixels"))?;
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for row in image.rows() {
+            for pixel in row {
+                out.extend_from_slice(&[
+                    (pixel.r >> 8) as u8,
+                    (pixel.g >> 8) as u8,
+                    (pixel.b >> 8) as u8,
+                    (pixel.a >> 8) as u8,
+                ]);
+            }
+        }
+        out
+    } else if descriptor.layout_compatible(PixelDescriptor::RGB8) {
+        let image = buffer
+            .try_as_imgref::<rgb::Rgb<u8>>()
+            .ok_or_else(|| anyhow!("failed to read AVIF RGB8 pixels"))?;
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for row in image.rows() {
+            for pixel in row {
+                out.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 255]);
+            }
+        }
+        out
+    } else if descriptor.layout_compatible(PixelDescriptor::RGB16) {
+        let image = buffer
+            .try_as_imgref::<rgb::Rgb<u16>>()
+            .ok_or_else(|| anyhow!("failed to read AVIF RGB16 pixels"))?;
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for row in image.rows() {
+            for pixel in row {
+                out.extend_from_slice(&[
+                    (pixel.r >> 8) as u8,
+                    (pixel.g >> 8) as u8,
+                    (pixel.b >> 8) as u8,
+                    255,
+                ]);
+            }
+        }
+        out
+    } else {
+        return Err(anyhow!("unsupported AVIF pixel layout"));
+    };
+
+    let image = RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| anyhow!("failed to materialize AVIF RGBA buffer"))?;
+    Ok(DynamicImage::ImageRgba8(image))
+}
+
+fn read_output_dimensions(entry: &InputEntry, output_format: OutputFormat, path: &Path) -> Result<(u32, u32)> {
+    match output_format {
+        OutputFormat::Original if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) => {
+            Ok((entry.width.unwrap_or(0), entry.height.unwrap_or(0)))
+        }
+        OutputFormat::Avif => {
+            let image = decode_avif_image(path)?;
+            Ok(image.dimensions())
+        }
+        _ => image::image_dimensions(path).map_err(Into::into),
+    }
+}
+
+fn resolve_output_root(settings: &BatchSettings) -> Result<PathBuf> {
+    match settings.output_mode {
+        OutputMode::DesktopDefault => default_output_root(),
+        OutputMode::Custom => match settings.custom_output_dir.as_deref() {
+            Some(path) if !path.trim().is_empty() => Ok(PathBuf::from(path)),
+            _ => default_output_root(),
+        },
+    }
+}
+
+fn default_output_root() -> Result<PathBuf> {
+    let desktop = desktop_dir().ok_or_else(|| anyhow!("desktop directory not available"))?;
+    Ok(desktop.join("@StorageSlim").join("output"))
+}
+
+fn resolve_output_format(entry: &InputEntry, requested: OutputFormat) -> OutputFormat {
     match requested {
         OutputFormat::Original => match entry.format {
-            InputFormat::Gif => Ok(OutputFormat::Gif),
-            InputFormat::Jpeg => Ok(OutputFormat::Jpeg),
-            InputFormat::Png => Ok(OutputFormat::Png),
-            InputFormat::Webp => Ok(OutputFormat::Webp),
-            InputFormat::Avif => Ok(OutputFormat::Avif),
-            InputFormat::Heic | InputFormat::Heif => Err(anyhow!(
-                "このビルドでは HEIC / HEIF のオリジナル形式維持再出力に対応していません。"
-            )),
+            InputFormat::Gif => OutputFormat::Gif,
+            InputFormat::Jpeg => OutputFormat::Jpeg,
+            InputFormat::Png => OutputFormat::Png,
+            InputFormat::Webp => OutputFormat::Webp,
+            InputFormat::Avif => OutputFormat::Avif,
+            InputFormat::Heic | InputFormat::Heif => OutputFormat::Original,
         },
-        other => Ok(other),
+        other => other,
     }
 }
 
@@ -537,7 +689,7 @@ fn build_output_path(
     output_format: OutputFormat,
     overwrite: bool,
 ) -> Result<PathBuf> {
-    let extension = output_extension(output_format);
+    let extension = output_extension(entry, output_format);
     let relative_path = Path::new(&entry.relative_path);
     let stem = relative_path
         .file_stem()
@@ -635,13 +787,17 @@ fn image_format_from_input(format: &InputFormat) -> Result<ImageFormat> {
         InputFormat::Png => Ok(ImageFormat::Png),
         InputFormat::Webp => Ok(ImageFormat::WebP),
         InputFormat::Avif => Ok(ImageFormat::Avif),
-        InputFormat::Heic | InputFormat::Heif => Err(anyhow!("heif input is unsupported in current build")),
+        InputFormat::Heic | InputFormat::Heif => Err(anyhow!("HEIC / HEIF uses external decoder path")),
     }
 }
 
-fn output_extension(format: OutputFormat) -> &'static str {
+fn output_extension(entry: &InputEntry, format: OutputFormat) -> &'static str {
     match format {
-        OutputFormat::Original => "bin",
+        OutputFormat::Original => match entry.format {
+            InputFormat::Heic => "heic",
+            InputFormat::Heif => "heif",
+            _ => "bin",
+        },
         OutputFormat::Gif => "gif",
         OutputFormat::Jpeg => "jpg",
         OutputFormat::Png => "png",
@@ -650,9 +806,9 @@ fn output_extension(format: OutputFormat) -> &'static str {
     }
 }
 
-fn output_format_label(format: OutputFormat) -> &'static str {
+fn output_format_label(entry: &InputEntry, format: OutputFormat) -> &'static str {
     match format {
-        OutputFormat::Original => "Original",
+        OutputFormat::Original => format_label(&entry.format),
         OutputFormat::Gif => "GIF",
         OutputFormat::Jpeg => "JPEG",
         OutputFormat::Png => "PNG",
@@ -767,10 +923,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![inspect_inputs, process_batch])
+        .invoke_handler(tauri::generate_handler![
+            inspect_inputs,
+            process_batch,
+            get_default_output_dir
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod sample_debug;
 
 #[cfg(test)]
 mod tests {

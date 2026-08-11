@@ -37,7 +37,12 @@ export interface InputEntry {
 
 export interface InspectResponse {
   entries: InputEntry[];
-  skipped: string[];
+  skipped: SkippedItem[];
+}
+
+export interface SkippedItem {
+  path: string;
+  reason: string;
 }
 
 export interface ResizeSettings {
