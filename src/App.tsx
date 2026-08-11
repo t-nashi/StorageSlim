@@ -11,6 +11,7 @@ import type {
   OutputFormat,
   ProcessResponse,
   ResizeMode,
+  ResizeUnit,
   SkippedItem,
 } from "./types";
 
@@ -22,6 +23,7 @@ type ChoiceOption<T extends string> = {
 };
 
 const STORAGE_KEY = "storageslim.settings.v1";
+const INPUT_SOURCE_KEY = "storageslim.inputSourceDir.v1";
 
 const fileFilters = [
   {
@@ -46,6 +48,11 @@ const resizeModeOptions: Array<ChoiceOption<ResizeMode>> = [
   { value: "longEdge", label: "長辺" },
 ];
 
+const resizeUnitOptions: Array<ChoiceOption<ResizeUnit>> = [
+  { value: "px", label: "px" },
+  { value: "percent", label: "%" },
+];
+
 const metadataOptions: Array<ChoiceOption<BatchSettings["metadataMode"]>> = [
   { value: "strip", label: "削除する" },
   { value: "keep", label: "保持する" },
@@ -60,6 +67,7 @@ function createDefaultSettings(defaultOutputDir: string): BatchSettings {
     resize: {
       mode: "none",
       value: null,
+      unit: "px",
     },
     quality: {
       jpegQuality: 82,
@@ -83,6 +91,16 @@ function clamp(value: number, min: number, max: number): number {
 function roundToStep(value: number, min: number, max: number, step: number): number {
   const snapped = Math.round((value - min) / step) * step + min;
   return clamp(Number(snapped.toFixed(4)), min, max);
+}
+
+function deriveDefaultInputDir(defaultOutputDir: string): string {
+  if (!defaultOutputDir) {
+    return "Desktop/@StorageSlim/input";
+  }
+  if (/[\\/]output$/i.test(defaultOutputDir)) {
+    return defaultOutputDir.replace(/[\\/]output$/i, (match) => match.replace(/output/i, "input"));
+  }
+  return `${defaultOutputDir.replace(/[\\/]?$/, "")}\\input`;
 }
 
 function normalizeSettings(raw: unknown, defaultOutputDir: string): BatchSettings {
@@ -116,6 +134,7 @@ function normalizeSettings(raw: unknown, defaultOutputDir: string): BatchSetting
         typeof resize.value === "number" && Number.isFinite(resize.value) && resize.value > 0
           ? Math.round(resize.value)
           : null,
+      unit: resize.unit === "percent" ? "percent" : "px",
     },
     quality: {
       jpegQuality: clamp(Number(quality.jpegQuality ?? fallback.quality.jpegQuality), 1, 100),
@@ -145,6 +164,18 @@ function loadStoredSettings(defaultOutputDir: string): BatchSettings {
   } catch {
     return createDefaultSettings(defaultOutputDir);
   }
+}
+
+function loadStoredInputSourceDir(defaultInputDir: string): string {
+  try {
+    const stored = window.localStorage.getItem(INPUT_SOURCE_KEY);
+    if (stored && stored.trim().length > 0) {
+      return stored;
+    }
+  } catch {
+    // Ignore malformed local state and fall back.
+  }
+  return defaultInputDir;
 }
 
 function formatBytes(bytes: number | null): string {
@@ -205,20 +236,22 @@ function ChoiceGroup<T extends string>({
   value,
   options,
   onChange,
+  disabled = false,
 }: {
   value: T;
   options: Array<ChoiceOption<T>>;
   onChange: (nextValue: T) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="choice-group">
+    <div className={`choice-group ${disabled ? "is-disabled" : ""}`}>
       {options.map((option) => (
         <button
           key={option.value}
           type="button"
           className={`choice-chip ${value === option.value ? "active" : ""}`}
           aria-pressed={value === option.value}
-          disabled={option.disabled}
+          disabled={disabled || option.disabled}
           title={option.title}
           onClick={() => onChange(option.value)}
         >
@@ -366,6 +399,8 @@ function QualityField({
 
 function App() {
   const [defaultOutputDir, setDefaultOutputDir] = useState("");
+  const [defaultInputDir, setDefaultInputDir] = useState("");
+  const [inputSourceDir, setInputSourceDir] = useState("");
   const [settings, setSettings] = useState<BatchSettings | null>(null);
   const [entries, setEntries] = useState<InputEntry[]>([]);
   const [skipped, setSkipped] = useState<SkippedItem[]>([]);
@@ -377,6 +412,8 @@ function App() {
   });
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
+  const dropDepthRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -387,15 +424,21 @@ function App() {
         if (!active) {
           return;
         }
+        const inputDir = deriveDefaultInputDir(outputDir);
         setDefaultOutputDir(outputDir);
+        setDefaultInputDir(inputDir);
+        setInputSourceDir(loadStoredInputSourceDir(inputDir));
         setSettings(loadStoredSettings(outputDir));
       } catch (error) {
         if (!active) {
           return;
         }
-        const fallback = "Desktop/@StorageSlim/output";
-        setDefaultOutputDir(fallback);
-        setSettings(loadStoredSettings(fallback));
+        const fallbackOutput = "Desktop/@StorageSlim/output";
+        const fallbackInput = deriveDefaultInputDir(fallbackOutput);
+        setDefaultOutputDir(fallbackOutput);
+        setDefaultInputDir(fallbackInput);
+        setInputSourceDir(loadStoredInputSourceDir(fallbackInput));
+        setSettings(loadStoredSettings(fallbackOutput));
         setErrorMessage(error instanceof Error ? error.message : String(error));
       }
     }
@@ -416,7 +459,22 @@ function App() {
       try {
         const webview = getCurrentWebview();
         unlistenDrop = await webview.onDragDropEvent(async (event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            if (active) {
+              setDropActive(true);
+            }
+            return;
+          }
+          if (event.payload.type === "leave") {
+            if (active) {
+              setDropActive(false);
+            }
+            return;
+          }
           if (event.payload.type === "drop") {
+            if (active) {
+              setDropActive(false);
+            }
             await addPaths(event.payload.paths);
           }
         });
@@ -432,10 +490,44 @@ function App() {
 
     void bind();
 
+    const handleDragEnter = (event: DragEvent) => {
+      event.preventDefault();
+      dropDepthRef.current += 1;
+      setDropActive(true);
+    };
+
+    const handleDragOver = (event: DragEvent) => {
+      event.preventDefault();
+      setDropActive(true);
+    };
+
+    const handleDragLeave = (event: DragEvent) => {
+      event.preventDefault();
+      dropDepthRef.current = Math.max(0, dropDepthRef.current - 1);
+      if (dropDepthRef.current === 0) {
+        setDropActive(false);
+      }
+    };
+
+    const handleDrop = (event: DragEvent) => {
+      event.preventDefault();
+      dropDepthRef.current = 0;
+      setDropActive(false);
+    };
+
+    window.addEventListener("dragenter", handleDragEnter);
+    window.addEventListener("dragover", handleDragOver);
+    window.addEventListener("dragleave", handleDragLeave);
+    window.addEventListener("drop", handleDrop);
+
     return () => {
       active = false;
       unlistenDrop?.();
       unlistenProgress?.();
+      window.removeEventListener("dragenter", handleDragEnter);
+      window.removeEventListener("dragover", handleDragOver);
+      window.removeEventListener("dragleave", handleDragLeave);
+      window.removeEventListener("drop", handleDrop);
     };
   }, []);
 
@@ -445,6 +537,13 @@ function App() {
     }
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   }, [settings]);
+
+  useEffect(() => {
+    if (!inputSourceDir) {
+      return;
+    }
+    window.localStorage.setItem(INPUT_SOURCE_KEY, inputSourceDir);
+  }, [inputSourceDir]);
 
   const allowedOutputs = useMemo(() => {
     const map = new Map<OutputFormat, string | null>();
@@ -480,13 +579,32 @@ function App() {
     [allowedOutputs],
   );
 
+  const resizeValueDisabled = settings?.resize.mode === "none";
+  const resizeValueUnit = settings?.resize.unit ?? "px";
+  const resizeValueLabel = resizeValueUnit === "percent" ? "リサイズ値(%)" : "リサイズ値(px)";
+  const resizeValueMax = resizeValueUnit === "percent" ? 100 : 100000;
+
   async function addPaths(paths: string[]) {
     if (paths.length === 0) {
       return;
     }
-    const response = await invoke<InspectResponse>("inspect_inputs", { paths });
-    setEntries((current) => mergeEntries(current, response.entries));
-    setSkipped((current) => current.concat(response.skipped));
+    try {
+      const response = await invoke<InspectResponse>("inspect_inputs", { paths });
+      setEntries((current) => mergeEntries(current, response.entries));
+      setSkipped((current) => current.concat(response.skipped));
+      setErrorMessage(null);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function loadInputSourceDir() {
+    const path = inputSourceDir.trim();
+    if (!path) {
+      setErrorMessage("入力先フォルダのパスを指定してください。");
+      return;
+    }
+    await addPaths([path]);
   }
 
   async function pickFiles() {
@@ -509,6 +627,18 @@ function App() {
       return;
     }
     await addPaths([selected]);
+  }
+
+  async function pickInputFolder() {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: inputSourceDir || defaultInputDir,
+    });
+    if (!selected || Array.isArray(selected)) {
+      return;
+    }
+    setInputSourceDir(selected);
   }
 
   async function pickOutputFolder() {
@@ -569,6 +699,10 @@ function App() {
     setSettings((current) => (current ? updater(current) : current));
   }
 
+  function resetInputPath() {
+    setInputSourceDir(defaultInputDir);
+  }
+
   function resetOutputPath() {
     if (!defaultOutputDir) {
       return;
@@ -588,6 +722,7 @@ function App() {
       return;
     }
     setSettings(createDefaultSettings(defaultOutputDir));
+    setInputSourceDir(defaultInputDir);
   }
 
   if (!settings) {
@@ -607,7 +742,6 @@ function App() {
         <div>
           <p className="eyebrow">StorageSlim MVP</p>
           <h1>画像最適化ワークベンチ</h1>
-          <p className="hero-copy">設定を固定したまま、入力追加から処理結果確認までを一続きで扱います。</p>
         </div>
       </section>
 
@@ -620,36 +754,9 @@ function App() {
                 初期化
               </button>
             </div>
-            <p className="panel-note">処理対象以外の設定はアプリ再起動後も保持されます。</p>
           </div>
 
           <div className="settings-stack">
-            <div className="field">
-              <span>出力先</span>
-              <div className="field-inline-head">
-                <small>既定値は Desktop/@StorageSlim/output です。</small>
-                <button type="button" className="ghost micro-button" onClick={resetOutputPath}>
-                  既定値へ戻す
-                </button>
-              </div>
-              <div className="inline-picker">
-                <input
-                  value={settings.customOutputDir ?? ""}
-                  placeholder="出力先フォルダ"
-                  onChange={(event) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      outputMode: "custom",
-                      customOutputDir: event.currentTarget.value,
-                    }))
-                  }
-                />
-                <button type="button" className="ghost" onClick={pickOutputFolder}>
-                  参照
-                </button>
-              </div>
-            </div>
-
             <div className="field">
               <span>出力形式</span>
               <ChoiceGroup
@@ -676,19 +783,43 @@ function App() {
               />
             </div>
 
-            <div className="field">
-              <span>リサイズ値(px)</span>
+            <div className={`field ${resizeValueDisabled ? "is-disabled" : ""}`}>
+              <div className="field-inline-head">
+                <span>{resizeValueLabel}</span>
+                <ChoiceGroup
+                  value={settings.resize.unit}
+                  options={resizeUnitOptions}
+                  disabled={resizeValueDisabled}
+                  onChange={(unit) =>
+                    updateSettings((current) => ({
+                      ...current,
+                      resize: {
+                        ...current.resize,
+                        unit,
+                        value:
+                          current.resize.value == null
+                            ? null
+                            : clamp(Math.round(current.resize.value), 1, unit === "percent" ? 100 : 100000),
+                      },
+                    }))
+                  }
+                />
+              </div>
               <input
                 type="number"
                 min={1}
-                disabled={settings.resize.mode === "none"}
+                max={resizeValueMax}
+                disabled={resizeValueDisabled}
                 value={settings.resize.value ?? ""}
                 onChange={(event) =>
                   updateSettings((current) => ({
                     ...current,
                     resize: {
                       ...current.resize,
-                      value: event.currentTarget.value === "" ? null : Math.round(Number(event.currentTarget.value)),
+                      value:
+                        event.currentTarget.value === ""
+                          ? null
+                          : clamp(Math.round(Number(event.currentTarget.value)), 1, resizeValueMax),
                     },
                   }))
                 }
@@ -696,12 +827,7 @@ function App() {
             </div>
 
             <div className="field">
-              <span>メタデータ</span>
-              <ChoiceGroup
-                value={settings.metadataMode}
-                options={metadataOptions}
-                onChange={(metadataMode) => updateSettings((current) => ({ ...current, metadataMode }))}
-              />
+              <span>品質調整</span>
             </div>
 
             <div className="quality-grid">
@@ -768,6 +894,15 @@ function App() {
             </div>
 
             <div className="field">
+              <span>メタデータ</span>
+              <ChoiceGroup
+                value={settings.metadataMode}
+                options={metadataOptions}
+                onChange={(metadataMode) => updateSettings((current) => ({ ...current, metadataMode }))}
+              />
+            </div>
+
+            <div className="field">
               <span>その他</span>
               <div className="checkbox-cluster">
                 <label className="checkbox">
@@ -820,59 +955,103 @@ function App() {
           </div>
         </aside>
 
-        <section className="panel workspace-panel">
+        <section className={`panel workspace-panel ${dropActive ? "drop-active" : ""}`}>
           <div className="workspace-header">
             <div className="workspace-heading">
               <h2>入力と結果</h2>
-              <p>入力追加、進捗確認、結果確認をここへまとめています。</p>
+              <p className="title-note">ファイル / フォルダはこの画面へドラッグ&ドロップでも追加できます。</p>
             </div>
-            <div className="toolbar-cluster">
-              <div className="drop-actions">
-                <button type="button" onClick={pickFiles}>
-                  ファイル追加
-                </button>
-                <button type="button" onClick={pickFolder}>
-                  フォルダ追加
-                </button>
-                <button type="button" className="ghost" onClick={() => setEntries([])}>
-                  入力をクリア
+          </div>
+
+          <div className="path-grid">
+            <div className="field">
+              <div className="field-inline-head">
+                <span>入力先</span>
+                <button type="button" className="ghost micro-button" onClick={resetInputPath}>
+                  既定値へ戻す
                 </button>
               </div>
-              <div className="action-row">
-                <button type="button" className="primary" disabled={entries.length === 0 || busy} onClick={runBatch}>
-                  {busy ? "処理中..." : "最適化を実行"}
+              <div className="inline-picker triple-line">
+                <input
+                  value={inputSourceDir}
+                  placeholder="入力先フォルダ"
+                  onChange={(event) => setInputSourceDir(event.currentTarget.value)}
+                />
+                <button type="button" className="ghost" onClick={pickInputFolder}>
+                  参照
                 </button>
-                <button type="button" className="ghost" onClick={() => setResults([])}>
-                  結果をクリア
+                <button type="button" className="ghost" onClick={loadInputSourceDir}>
+                  読込
+                </button>
+              </div>
+            </div>
+
+            <div className="field">
+              <div className="field-inline-head">
+                <span>出力先</span>
+                <button type="button" className="ghost micro-button" onClick={resetOutputPath}>
+                  既定値へ戻す
+                </button>
+              </div>
+              <div className="inline-picker double-line">
+                <input
+                  value={settings.customOutputDir ?? ""}
+                  placeholder="出力先フォルダ"
+                  onChange={(event) =>
+                    updateSettings((current) => ({
+                      ...current,
+                      outputMode: "custom",
+                      customOutputDir: event.currentTarget.value,
+                    }))
+                  }
+                />
+                <button type="button" className="ghost" onClick={pickOutputFolder}>
+                  参照
                 </button>
               </div>
             </div>
           </div>
 
-          <div className="drop-hint">ファイル / フォルダはこの画面へドラッグ&ドロップでも追加できます。</div>
-
-          <div className="progress-panel">
-            <div className="progress-inline-meta">
-              <strong>
-                {progress.completed} / {progress.total}
-              </strong>
-              <span>{progress.currentPath ?? "待機中"}</span>
+          <div className="run-panel">
+            <div className="progress-panel">
+              <div className="progress-inline-meta">
+                <strong>
+                  {progress.completed} / {progress.total}
+                </strong>
+                <span>{progress.currentPath ?? "待機中"}</span>
+              </div>
+              <div className="progress-bar">
+                <div
+                  className="progress-bar-fill"
+                  style={{
+                    width: progress.total === 0 ? "0%" : `${Math.round((progress.completed / progress.total) * 100)}%`,
+                  }}
+                />
+              </div>
             </div>
-            <div className="progress-bar">
-              <div
-                className="progress-bar-fill"
-                style={{
-                  width: progress.total === 0 ? "0%" : `${Math.round((progress.completed / progress.total) * 100)}%`,
-                }}
-              />
-            </div>
+            <button type="button" className="primary run-button" disabled={entries.length === 0 || busy} onClick={runBatch}>
+              {busy ? "処理中..." : "最適化を実行"}
+            </button>
           </div>
 
           <div className="workspace-grid">
             <section className="subpanel">
               <div className="subpanel-header">
-                <h3>入力一覧</h3>
-                <span>{entries.length} 件</span>
+                <div className="title-inline">
+                  <h3>入力一覧</h3>
+                  <span>{entries.length} 件</span>
+                </div>
+                <div className="subpanel-actions">
+                  <button type="button" className="ghost panel-action" onClick={pickFiles}>
+                    ファイル追加
+                  </button>
+                  <button type="button" className="ghost panel-action" onClick={pickFolder}>
+                    フォルダ追加
+                  </button>
+                  <button type="button" className="ghost panel-action" disabled={entries.length === 0} onClick={() => setEntries([])}>
+                    入力をクリア
+                  </button>
+                </div>
               </div>
               {skipped.length > 0 ? (
                 <details className="skip-details" open>
@@ -941,9 +1120,12 @@ function App() {
               <div className="subpanel-header">
                 <div className="title-inline">
                   <h3>結果</h3>
+                  <span>{results.length} 件</span>
                   <span className="saved-inline">Saved: {formatBytes(totalSaved)}</span>
                 </div>
-                <span>{results.length} 件</span>
+                <button type="button" className="ghost panel-action" disabled={results.length === 0} onClick={() => setResults([])}>
+                  結果をクリア
+                </button>
               </div>
               <div className="table-scroll">
                 <table className="data-table">
@@ -978,9 +1160,7 @@ function App() {
                           <td>
                             <div className="file-cell">
                               <strong title={result.outputFormat ?? "-"}>{result.outputFormat ?? "-"}</strong>
-                              <small title={result.outputPath ?? result.reason ?? "-"}>
-                                {result.outputPath ?? result.reason ?? "-"}
-                              </small>
+                              <small title={result.outputPath ?? result.reason ?? "-"}>{result.outputPath ?? result.reason ?? "-"}</small>
                             </div>
                           </td>
                           <td>{formatBytes(result.originalSize)}</td>

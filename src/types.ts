@@ -18,6 +18,7 @@ export type OutputFormat =
 export type MetadataMode = "strip" | "keep";
 export type OutputMode = "desktopDefault" | "custom";
 export type ResizeMode = "none" | "width" | "height" | "longEdge";
+export type ResizeUnit = "px" | "percent";
 
 export interface InputEntry {
   id: string;
@@ -48,6 +49,7 @@ export interface SkippedItem {
 export interface ResizeSettings {
   mode: ResizeMode;
   value: number | null;
+  unit: ResizeUnit;
 }
 
 export interface QualitySettings {

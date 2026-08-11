@@ -98,9 +98,17 @@ enum ResizeMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+enum ResizeUnit {
+    Px,
+    Percent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResizeSettings {
     mode: ResizeMode,
     value: Option<u32>,
+    unit: ResizeUnit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -713,20 +721,32 @@ fn resize_dynamic_image(image: DynamicImage, settings: &ResizeSettings) -> Dynam
         return image;
     };
     let (width, height) = image.dimensions();
+    let scaled_value = match settings.unit {
+        ResizeUnit::Px => value,
+        ResizeUnit::Percent => {
+            let basis = match settings.mode {
+                ResizeMode::None => return image,
+                ResizeMode::Width => width,
+                ResizeMode::Height => height,
+                ResizeMode::LongEdge => width.max(height),
+            };
+            ((basis as f64 * (value as f64 / 100.0)).round() as u32).max(1)
+        }
+    };
     let (target_width, target_height) = match settings.mode {
         ResizeMode::None => return image,
         ResizeMode::Width => {
-            let new_width = value.min(width).max(1);
+            let new_width = scaled_value.min(width).max(1);
             let new_height = ((height as f64 * (new_width as f64 / width as f64)).round() as u32).max(1);
             (new_width, new_height)
         }
         ResizeMode::Height => {
-            let new_height = value.min(height).max(1);
+            let new_height = scaled_value.min(height).max(1);
             let new_width = ((width as f64 * (new_height as f64 / height as f64)).round() as u32).max(1);
             (new_width, new_height)
         }
         ResizeMode::LongEdge => {
-            let limited = value.min(width.max(height)).max(1);
+            let limited = scaled_value.min(width.max(height)).max(1);
             if width >= height {
                 let new_width = limited;
                 let new_height = ((height as f64 * (new_width as f64 / width as f64)).round() as u32).max(1);
@@ -979,6 +999,7 @@ mod tests {
             resize: ResizeSettings {
                 mode: ResizeMode::Width,
                 value: Some(20),
+                unit: ResizeUnit::Px,
             },
             quality: QualitySettings {
                 jpeg_quality: 80,
@@ -1026,6 +1047,7 @@ mod tests {
             resize: ResizeSettings {
                 mode: ResizeMode::None,
                 value: None,
+                unit: ResizeUnit::Px,
             },
             quality: QualitySettings {
                 jpeg_quality: 80,
@@ -1043,5 +1065,22 @@ mod tests {
         let output_root = resolve_output_root(&settings).unwrap();
         let error = process_one(&entry, &settings, &output_root).unwrap_err();
         assert!(error.to_string().contains("アニメーション GIF"));
+    }
+
+    #[test]
+    fn resize_percent_uses_relative_dimensions() {
+        let image =
+            DynamicImage::ImageRgba8(ImageBuffer::<Rgba<u8>, _>::from_pixel(400, 200, Rgba([0, 0, 0, 255])));
+
+        let resized = resize_dynamic_image(
+            image,
+            &ResizeSettings {
+                mode: ResizeMode::LongEdge,
+                value: Some(50),
+                unit: ResizeUnit::Percent,
+            },
+        );
+
+        assert_eq!(resized.dimensions(), (200, 100));
     }
 }

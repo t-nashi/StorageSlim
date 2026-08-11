@@ -26,6 +26,7 @@ fn default_test_settings(output_root: &Path) -> BatchSettings {
         resize: ResizeSettings {
             mode: ResizeMode::None,
             value: None,
+            unit: ResizeUnit::Px,
         },
         quality: QualitySettings {
             jpeg_quality: 80,
