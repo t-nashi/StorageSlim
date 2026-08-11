@@ -35,3 +35,4 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage
 rgb = "0.8"
 zenavif = "0.1"
 zenpixels = "0.2"
+tauri-plugin-fs = "2.5.1"

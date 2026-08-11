@@ -8,6 +8,10 @@ fn repo_sample_dir() -> PathBuf {
         .join("input")
 }
 
+fn desktop_sample_dir() -> PathBuf {
+    PathBuf::from(r"C:\Users\Owner\Desktop\@StorageSlim\input")
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("storageslim-{name}-{}", std::process::id()));
     if path.exists() {
@@ -50,6 +54,31 @@ fn inspect_repo_samples_reports_expected_flags() {
 
     let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
     assert!(response.skipped.is_empty());
+    assert_eq!(response.entries.len(), 8);
+
+    let by_name: HashMap<_, _> = response
+        .entries
+        .iter()
+        .map(|entry| (entry.file_name.as_str(), entry))
+        .collect();
+
+    assert!(by_name["sample-animated.gif"].animated);
+    assert!(!by_name["sample-static.gif"].animated);
+    assert!(by_name["sample-avif.avif"].runtime_supported);
+    assert!(by_name["sample-heic.heic"].runtime_supported);
+    assert!(by_name["sample-heif.heif"].runtime_supported);
+    assert!(by_name["sample-photo.jpg"].width.is_some());
+    assert!(by_name["sample-graphic.png"].height.is_some());
+    assert!(by_name["sample-webp.webp"].runtime_supported);
+}
+
+#[test]
+fn inspect_desktop_samples_reports_expected_flags() {
+    let sample_dir = desktop_sample_dir();
+    assert!(sample_dir.exists(), "desktop sample directory is missing: {}", sample_dir.display());
+
+    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
+    assert!(response.skipped.is_empty(), "skipped: {:?}", response.skipped);
     assert_eq!(response.entries.len(), 8);
 
     let by_name: HashMap<_, _> = response

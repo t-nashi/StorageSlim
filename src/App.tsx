@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
+import { readDir } from "@tauri-apps/plugin-fs";
 import "./App.css";
 import type {
   BatchProgress,
@@ -24,6 +25,7 @@ type ChoiceOption<T extends string> = {
 
 const STORAGE_KEY = "storageslim.settings.v1";
 const INPUT_SOURCE_KEY = "storageslim.inputSourceDir.v1";
+const imageExtensions = new Set(["gif", "jpg", "jpeg", "png", "webp", "avif", "heic", "heif"]);
 
 const fileFilters = [
   {
@@ -31,6 +33,16 @@ const fileFilters = [
     extensions: ["gif", "jpg", "jpeg", "png", "webp", "avif", "heic", "heif"],
   },
 ];
+
+function hasAllowedImageExtension(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  const extension = normalized.split(".").pop()?.toLowerCase();
+  return extension ? imageExtensions.has(extension) : false;
+}
+
+function joinNativePath(parent: string, child: string): string {
+  return `${parent.replace(/[\\/]+$/, "")}\\${child}`;
+}
 
 const outputOptions: Array<{ value: OutputFormat; label: string }> = [
   { value: "original", label: "オリジナル維持" },
@@ -101,6 +113,27 @@ function deriveDefaultInputDir(defaultOutputDir: string): string {
     return defaultOutputDir.replace(/[\\/]output$/i, (match) => match.replace(/output/i, "input"));
   }
   return `${defaultOutputDir.replace(/[\\/]?$/, "")}\\input`;
+}
+
+async function collectImageFilesInDirectory(rootPath: string): Promise<string[]> {
+  const files: string[] = [];
+
+  async function walk(currentPath: string) {
+    const entries = await readDir(currentPath);
+    for (const entry of entries) {
+      const nextPath = joinNativePath(currentPath, entry.name);
+      if (entry.isDirectory) {
+        await walk(nextPath);
+        continue;
+      }
+      if (entry.isFile && hasAllowedImageExtension(nextPath)) {
+        files.push(nextPath);
+      }
+    }
+  }
+
+  await walk(rootPath);
+  return files.sort((left, right) => left.localeCompare(right));
 }
 
 function normalizeSettings(raw: unknown, defaultOutputDir: string): BatchSettings {
@@ -604,7 +637,16 @@ function App() {
       setErrorMessage("入力先フォルダのパスを指定してください。");
       return;
     }
-    await addPaths([path]);
+    try {
+      const files = await collectImageFilesInDirectory(path);
+      if (files.length === 0) {
+        setErrorMessage("入力先フォルダ内に対応画像が見つかりませんでした。");
+        return;
+      }
+      await addPaths(files);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function pickFiles() {
