@@ -90,8 +90,8 @@ function createDefaultSettings(defaultOutputDir: string): BatchSettings {
     },
     metadataMode: "strip",
     timestamps: {
-      preserveCreationTime: true,
-      preserveLastWriteTime: true,
+      preserveCreationTime: false,
+      preserveLastWriteTime: false,
     },
   };
 }
@@ -233,6 +233,26 @@ function formatDimension(width: number | null, height: number | null): string {
     return "-";
   }
   return `${width} x ${height}`;
+}
+
+function inputNameState(entry: InputEntry): "normal" | "accent" | "warning" {
+  if (!entry.runtimeSupported) {
+    return "warning";
+  }
+  return entry.animated ? "accent" : "normal";
+}
+
+function resultNameState(
+  result: ProcessResponse["results"][number],
+  sourceEntry?: InputEntry,
+): "normal" | "accent" | "warning" | "danger" {
+  if (!result.success) {
+    return "danger";
+  }
+  if (sourceEntry?.animated) {
+    return "accent";
+  }
+  return result.warnings.length > 0 ? "warning" : "normal";
 }
 
 function outputAllowed(entry: InputEntry, output: OutputFormat): boolean {
@@ -407,7 +427,17 @@ function QualityField({
             step={step}
             value={draft}
             autoFocus
-            onChange={(event) => setDraft(event.currentTarget.value)}
+            onChange={(event) => {
+              const nextRaw = event.currentTarget.value;
+              setDraft(nextRaw);
+              if (nextRaw === "") {
+                return;
+              }
+              const parsed = Number(nextRaw);
+              if (Number.isFinite(parsed)) {
+                onChange(roundToStep(parsed, min, max, step));
+              }
+            }}
             onBlur={() => commit(draft)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -446,6 +476,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const dropDepthRef = useRef(0);
 
   useEffect(() => {
@@ -600,6 +631,17 @@ function App() {
   const totalSaved = useMemo(() => {
     return results.filter((result) => result.success).reduce((sum, result) => sum + (result.savedSize ?? 0), 0);
   }, [results]);
+  const failedCount = useMemo(() => {
+    return results.filter((result) => !result.success).length;
+  }, [results]);
+
+  const entryBySourcePath = useMemo(() => {
+    const map = new Map<string, InputEntry>();
+    for (const entry of entries) {
+      map.set(entry.sourcePath, entry);
+    }
+    return map;
+  }, [entries]);
 
   const outputFormatChoices = useMemo<Array<ChoiceOption<OutputFormat>>>(
     () =>
@@ -614,8 +656,10 @@ function App() {
 
   const resizeValueDisabled = settings?.resize.mode === "none";
   const resizeValueUnit = settings?.resize.unit ?? "px";
-  const resizeValueLabel = resizeValueUnit === "percent" ? "リサイズ値(%)" : "リサイズ値(px)";
   const resizeValueMax = resizeValueUnit === "percent" ? 100 : 100000;
+  const resizeValueRequired = !resizeValueDisabled;
+  const resizeValueMissing = resizeValueRequired && (settings?.resize.value == null || settings.resize.value <= 0);
+  const canRunBatch = entries.length > 0 && !busy && !resizeValueMissing;
 
   async function addPaths(paths: string[]) {
     if (paths.length === 0) {
@@ -710,6 +754,10 @@ function App() {
     if (!settings || entries.length === 0 || busy) {
       return;
     }
+    if (settings.resize.mode !== "none" && (settings.resize.value == null || settings.resize.value <= 0)) {
+      setErrorMessage("リサイズ基準を選択した場合はリサイズ値の入力が必要です。");
+      return;
+    }
     setBusy(true);
     setResults([]);
     setErrorMessage(null);
@@ -799,7 +847,7 @@ function App() {
           </div>
 
           <div className="settings-stack">
-            <div className="field">
+            <div className="field setting-output-format">
               <span>出力形式</span>
               <ChoiceGroup
                 value={settings.outputFormat}
@@ -808,134 +856,78 @@ function App() {
               />
             </div>
 
-            <div className="field">
+            <div className="field setting-resize-mode">
               <span>リサイズ基準</span>
-              <ChoiceGroup
-                value={settings.resize.mode}
-                options={resizeModeOptions}
-                onChange={(mode) =>
-                  updateSettings((current) => ({
-                    ...current,
-                    resize: {
-                      ...current.resize,
-                      mode,
-                    },
-                  }))
-                }
-              />
-            </div>
-
-            <div className={`field ${resizeValueDisabled ? "is-disabled" : ""}`}>
-              <div className="field-inline-head">
-                <span>{resizeValueLabel}</span>
+              <div className={`resize-control-row ${resizeValueMissing ? "is-required" : ""}`}>
                 <ChoiceGroup
-                  value={settings.resize.unit}
-                  options={resizeUnitOptions}
-                  disabled={resizeValueDisabled}
-                  onChange={(unit) =>
+                  value={settings.resize.mode}
+                  options={resizeModeOptions}
+                  onChange={(mode) =>
                     updateSettings((current) => ({
                       ...current,
                       resize: {
                         ...current.resize,
-                        unit,
-                        value:
-                          current.resize.value == null
-                            ? null
-                            : clamp(Math.round(current.resize.value), 1, unit === "percent" ? 100 : 100000),
+                        mode,
                       },
                     }))
                   }
                 />
+                <div className="resize-value-inline">
+                  <input
+                    type="number"
+                    min={1}
+                    max={resizeValueMax}
+                    disabled={resizeValueDisabled}
+                    aria-invalid={resizeValueMissing}
+                    value={settings.resize.value ?? ""}
+                    placeholder={resizeValueMissing ? "必須" : ""}
+                    onChange={(event) => {
+                      const rawValue = event.currentTarget.value;
+                      if (rawValue !== "") {
+                        setErrorMessage((current) =>
+                          current === "リサイズ基準を選択した場合はリサイズ値の入力が必要です。" ? null : current,
+                        );
+                      }
+                      updateSettings((current) => {
+                        const parsed = Number(rawValue);
+                        return {
+                          ...current,
+                          resize: {
+                            ...current.resize,
+                            value:
+                              rawValue === ""
+                                ? null
+                                : Number.isFinite(parsed)
+                                  ? clamp(Math.round(parsed), 1, resizeValueMax)
+                                  : current.resize.value,
+                          },
+                        };
+                      });
+                    }}
+                  />
+                  <ChoiceGroup
+                    value={settings.resize.unit}
+                    options={resizeUnitOptions}
+                    disabled={resizeValueDisabled}
+                    onChange={(unit) =>
+                      updateSettings((current) => ({
+                        ...current,
+                        resize: {
+                          ...current.resize,
+                          unit,
+                          value:
+                            current.resize.value == null
+                              ? null
+                              : clamp(Math.round(current.resize.value), 1, unit === "percent" ? 100 : 100000),
+                        },
+                      }))
+                    }
+                  />
+                </div>
               </div>
-              <input
-                type="number"
-                min={1}
-                max={resizeValueMax}
-                disabled={resizeValueDisabled}
-                value={settings.resize.value ?? ""}
-                onChange={(event) =>
-                  updateSettings((current) => ({
-                    ...current,
-                    resize: {
-                      ...current.resize,
-                      value:
-                        event.currentTarget.value === ""
-                          ? null
-                          : clamp(Math.round(Number(event.currentTarget.value)), 1, resizeValueMax),
-                    },
-                  }))
-                }
-              />
             </div>
 
-            <div className="field">
-              <span>品質調整</span>
-            </div>
-
-            <div className="quality-grid">
-              <QualityField
-                label="JPEG (1-100)"
-                value={settings.quality.jpegQuality}
-                min={1}
-                max={100}
-                onChange={(jpegQuality) =>
-                  updateSettings((current) => ({
-                    ...current,
-                    quality: { ...current.quality, jpegQuality },
-                  }))
-                }
-              />
-              <QualityField
-                label="WebP (1-100)"
-                value={settings.quality.webpQuality}
-                min={1}
-                max={100}
-                onChange={(webpQuality) =>
-                  updateSettings((current) => ({
-                    ...current,
-                    quality: { ...current.quality, webpQuality },
-                  }))
-                }
-              />
-              <QualityField
-                label="AVIF (1-100)"
-                value={settings.quality.avifQuality}
-                min={1}
-                max={100}
-                onChange={(avifQuality) =>
-                  updateSettings((current) => ({
-                    ...current,
-                    quality: { ...current.quality, avifQuality },
-                  }))
-                }
-              />
-              <QualityField
-                label="PNG (0-9)"
-                value={settings.quality.pngCompression}
-                min={0}
-                max={9}
-                onChange={(pngCompression) =>
-                  updateSettings((current) => ({
-                    ...current,
-                    quality: { ...current.quality, pngCompression },
-                  }))
-                }
-              />
-              <QualityField
-                label="GIF (2-256)"
-                value={settings.quality.gifColors}
-                min={2}
-                max={256}
-                onChange={(gifColors) =>
-                  updateSettings((current) => ({
-                    ...current,
-                    quality: { ...current.quality, gifColors },
-                  }))
-                }
-              />
-            </div>
-
-            <div className="field">
+            <div className="field setting-metadata">
               <span>メタデータ</span>
               <ChoiceGroup
                 value={settings.metadataMode}
@@ -944,56 +936,141 @@ function App() {
               />
             </div>
 
-            <div className="field">
-              <span>その他</span>
-              <div className="checkbox-cluster">
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={settings.timestamps.preserveCreationTime}
-                    onChange={(event) =>
-                      updateSettings((current) => ({
-                        ...current,
-                        timestamps: {
-                          ...current.timestamps,
-                          preserveCreationTime: event.currentTarget.checked,
-                        },
-                      }))
-                    }
-                  />
-                  <span>作成日時を引き継ぐ</span>
-                </label>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={settings.timestamps.preserveLastWriteTime}
-                    onChange={(event) =>
-                      updateSettings((current) => ({
-                        ...current,
-                        timestamps: {
-                          ...current.timestamps,
-                          preserveLastWriteTime: event.currentTarget.checked,
-                        },
-                      }))
-                    }
-                  />
-                  <span>更新日時を引き継ぐ</span>
-                </label>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={settings.overwrite}
-                    onChange={(event) =>
-                      updateSettings((current) => ({
-                        ...current,
-                        overwrite: event.currentTarget.checked,
-                      }))
-                    }
-                  />
-                  <span>上書きを許可する</span>
-                </label>
-              </div>
+            <div className="advanced-toggle">
+              <button
+                type="button"
+                className={`section-disclosure ${advancedExpanded ? "is-open" : ""}`}
+                aria-expanded={advancedExpanded}
+                onClick={() => setAdvancedExpanded((current) => !current)}
+              >
+                <span className="section-disclosure-copy">
+                  <strong>品質調整・その他</strong>
+                </span>
+                <span className="section-disclosure-chevron" aria-hidden="true">
+                  {advancedExpanded ? "▾" : "▸"}
+                </span>
+              </button>
             </div>
+
+            {advancedExpanded ? (
+              <div className="quality-grid">
+                <QualityField
+                  label="JPEG (1-100)"
+                  value={settings.quality.jpegQuality}
+                  min={1}
+                  max={100}
+                  onChange={(jpegQuality) =>
+                    updateSettings((current) => ({
+                      ...current,
+                      quality: { ...current.quality, jpegQuality },
+                    }))
+                  }
+                />
+                <QualityField
+                  label="WebP (1-100)"
+                  value={settings.quality.webpQuality}
+                  min={1}
+                  max={100}
+                  onChange={(webpQuality) =>
+                    updateSettings((current) => ({
+                      ...current,
+                      quality: { ...current.quality, webpQuality },
+                    }))
+                  }
+                />
+                <QualityField
+                  label="AVIF (1-100)"
+                  value={settings.quality.avifQuality}
+                  min={1}
+                  max={100}
+                  onChange={(avifQuality) =>
+                    updateSettings((current) => ({
+                      ...current,
+                      quality: { ...current.quality, avifQuality },
+                    }))
+                  }
+                />
+                <QualityField
+                  label="PNG (0-9)"
+                  value={settings.quality.pngCompression}
+                  min={0}
+                  max={9}
+                  onChange={(pngCompression) =>
+                    updateSettings((current) => ({
+                      ...current,
+                      quality: { ...current.quality, pngCompression },
+                    }))
+                  }
+                />
+                <QualityField
+                  label="GIF (2-256)"
+                  value={settings.quality.gifColors}
+                  min={2}
+                  max={256}
+                  onChange={(gifColors) =>
+                    updateSettings((current) => ({
+                      ...current,
+                      quality: { ...current.quality, gifColors },
+                    }))
+                  }
+                />
+              </div>
+            ) : null}
+
+            {advancedExpanded ? (
+              <div className="field setting-other-panel">
+                <div className="checkbox-cluster">
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={settings.timestamps.preserveCreationTime}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        updateSettings((current) => ({
+                          ...current,
+                          timestamps: {
+                            ...current.timestamps,
+                            preserveCreationTime: checked,
+                          },
+                        }));
+                      }}
+                    />
+                    <span>作成日時を引き継ぐ</span>
+                  </label>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={settings.timestamps.preserveLastWriteTime}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        updateSettings((current) => ({
+                          ...current,
+                          timestamps: {
+                            ...current.timestamps,
+                            preserveLastWriteTime: checked,
+                          },
+                        }));
+                      }}
+                    />
+                    <span>更新日時を引き継ぐ</span>
+                  </label>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={settings.overwrite}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        updateSettings((current) => ({
+                          ...current,
+                          overwrite: checked,
+                        }));
+                      }}
+                    />
+                    <span>上書きを許可する</span>
+                  </label>
+                </div>
+              </div>
+            ) : null}
           </div>
         </aside>
 
@@ -1001,7 +1078,36 @@ function App() {
           <div className="workspace-header">
             <div className="workspace-heading">
               <h2>入力と結果</h2>
-              <p className="title-note">ファイル / フォルダはこの画面へドラッグ&ドロップでも追加できます。</p>
+              <p className="title-note">ファイル / フォルダはこの画面へドラッグ&ドロップでも追加できます</p>
+            </div>
+            <div className="run-panel">
+              <div className="progress-panel">
+                <div className="progress-inline-meta">
+                  <div className="progress-summary">
+                    <strong>
+                      {progress.completed} / {progress.total}
+                    </strong>
+                    {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
+                  </div>
+                  <span>{progress.currentPath ?? "待機中"}</span>
+                </div>
+                <div className="progress-bar">
+                  <div
+                    className="progress-bar-fill"
+                    style={{
+                      width: progress.total === 0 ? "0%" : `${Math.round((progress.completed / progress.total) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+              <button
+                type="button"
+                className="primary run-button"
+                disabled={!canRunBatch}
+                onClick={runBatch}
+              >
+                {busy ? "処理中..." : "最適化を実行"}
+              </button>
             </div>
           </div>
 
@@ -1039,13 +1145,14 @@ function App() {
                 <input
                   value={settings.customOutputDir ?? ""}
                   placeholder="出力先フォルダ"
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const nextOutputDir = event.currentTarget.value;
                     updateSettings((current) => ({
                       ...current,
                       outputMode: "custom",
-                      customOutputDir: event.currentTarget.value,
-                    }))
-                  }
+                      customOutputDir: nextOutputDir,
+                    }));
+                  }}
                 />
                 <button type="button" className="ghost" onClick={pickOutputFolder}>
                   参照
@@ -1054,30 +1161,8 @@ function App() {
             </div>
           </div>
 
-          <div className="run-panel">
-            <div className="progress-panel">
-              <div className="progress-inline-meta">
-                <strong>
-                  {progress.completed} / {progress.total}
-                </strong>
-                <span>{progress.currentPath ?? "待機中"}</span>
-              </div>
-              <div className="progress-bar">
-                <div
-                  className="progress-bar-fill"
-                  style={{
-                    width: progress.total === 0 ? "0%" : `${Math.round((progress.completed / progress.total) * 100)}%`,
-                  }}
-                />
-              </div>
-            </div>
-            <button type="button" className="primary run-button" disabled={entries.length === 0 || busy} onClick={runBatch}>
-              {busy ? "処理中..." : "最適化を実行"}
-            </button>
-          </div>
-
           <div className="workspace-grid">
-            <section className="subpanel">
+            <section className={`subpanel ${entries.length === 0 ? "is-empty" : "has-rows"}`}>
               <div className="subpanel-header">
                 <div className="title-inline">
                   <h3>入力一覧</h3>
@@ -1109,7 +1194,7 @@ function App() {
                   </div>
                 </details>
               ) : null}
-              <div className="table-scroll">
+              <div className={`table-scroll ${entries.length === 0 ? "is-empty" : "has-rows"}`}>
                 <table className="data-table">
                   <thead>
                     <tr>
@@ -1124,7 +1209,7 @@ function App() {
                     {entries.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="empty-cell">
-                          まだファイルがありません。
+                          まだファイルがありません
                         </td>
                       </tr>
                     ) : (
@@ -1132,7 +1217,14 @@ function App() {
                         <tr key={entry.id}>
                           <td>
                             <div className="file-cell">
-                              <strong title={entry.fileName}>{entry.fileName}</strong>
+                              <strong title={entry.fileName} className={`file-name file-name-${inputNameState(entry)}`}>
+                                {entry.fileName}
+                                {!entry.runtimeSupported ? (
+                                  <span className="file-name-indicator">制約</span>
+                                ) : entry.animated ? (
+                                  <span className="file-name-indicator">animation</span>
+                                ) : null}
+                              </strong>
                               <small title={entry.sourcePath}>{entry.sourcePath}</small>
                             </div>
                           </td>
@@ -1158,18 +1250,19 @@ function App() {
               </div>
             </section>
 
-            <section className="subpanel">
+            <section className={`subpanel ${results.length === 0 ? "is-empty" : "has-rows"}`}>
               <div className="subpanel-header">
                 <div className="title-inline">
                   <h3>結果</h3>
                   <span>{results.length} 件</span>
                   <span className="saved-inline">Saved: {formatBytes(totalSaved)}</span>
+                  {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
                 </div>
                 <button type="button" className="ghost panel-action" disabled={results.length === 0} onClick={() => setResults([])}>
                   結果をクリア
                 </button>
               </div>
-              <div className="table-scroll">
+              <div className={`table-scroll ${results.length === 0 ? "is-empty" : "has-rows"}`}>
                 <table className="data-table">
                   <thead>
                     <tr>
@@ -1185,7 +1278,7 @@ function App() {
                     {results.length === 0 ? (
                       <tr>
                         <td colSpan={6} className="empty-cell">
-                          まだ処理結果がありません。
+                          まだ処理結果がありません
                         </td>
                       </tr>
                     ) : (
@@ -1193,8 +1286,18 @@ function App() {
                         <tr key={`${result.sourcePath}-${result.outputPath ?? "error"}`}>
                           <td>
                             <div className="file-cell">
-                              <strong title={result.sourcePath.split(/[\\/]/).pop() ?? ""}>
+                              <strong
+                                title={result.sourcePath.split(/[\\/]/).pop() ?? ""}
+                                className={`file-name file-name-${resultNameState(result, entryBySourcePath.get(result.sourcePath))}`}
+                              >
                                 {result.sourcePath.split(/[\\/]/).pop()}
+                                {!result.success ? (
+                                  <span className="file-name-indicator">失敗</span>
+                                ) : entryBySourcePath.get(result.sourcePath)?.animated ? (
+                                  <span className="file-name-indicator">animation</span>
+                                ) : result.warnings.length > 0 ? (
+                                  <span className="file-name-indicator">注意</span>
+                                ) : null}
                               </strong>
                               <small title={result.sourcePath}>{result.sourcePath}</small>
                             </div>
