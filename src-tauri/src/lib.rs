@@ -5,6 +5,10 @@ use std::{
     io::BufWriter,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -192,16 +196,61 @@ struct BatchProgress {
     completed: usize,
     total: usize,
     current_path: Option<String>,
+    state: BatchProgressState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum BatchProgressState {
+    Running,
+    Paused,
+    Stopping,
+}
+
+#[derive(Clone, Default)]
+struct BatchControl {
+    paused: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
 }
 
 #[tauri::command]
-fn inspect_inputs(paths: Vec<String>) -> Result<InspectResponse, String> {
-    inspect_inputs_impl(paths).map_err(|error| error.to_string())
+async fn inspect_inputs(paths: Vec<String>) -> Result<InspectResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || inspect_inputs_impl(paths))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn process_batch(window: Window, request: ProcessRequest) -> Result<ProcessResponse, String> {
-    process_batch_impl(window, request).map_err(|error| error.to_string())
+async fn process_batch(
+    window: Window,
+    control: tauri::State<'_, BatchControl>,
+    request: ProcessRequest,
+) -> Result<ProcessResponse, String> {
+    control.paused.store(false, Ordering::SeqCst);
+    control.stop_requested.store(false, Ordering::SeqCst);
+    let control = control.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || process_batch_impl(window, request, control))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn pause_batch(control: tauri::State<'_, BatchControl>) {
+    control.paused.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn resume_batch(control: tauri::State<'_, BatchControl>) {
+    control.paused.store(false, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn stop_batch(control: tauri::State<'_, BatchControl>) {
+    control.stop_requested.store(true, Ordering::SeqCst);
+    control.paused.store(false, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -347,7 +396,7 @@ fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
     }
 }
 
-fn process_batch_impl(window: Window, request: ProcessRequest) -> Result<ProcessResponse> {
+fn process_batch_impl(window: Window, request: ProcessRequest, control: BatchControl) -> Result<ProcessResponse> {
     let output_root = resolve_output_root(&request.settings)?;
     fs::create_dir_all(&output_root)
         .with_context(|| format!("failed to create output root: {}", output_root.display()))?;
@@ -356,12 +405,17 @@ fn process_batch_impl(window: Window, request: ProcessRequest) -> Result<Process
     let mut results = Vec::with_capacity(total);
 
     for (index, entry) in request.entries.iter().enumerate() {
+        if !wait_until_batch_can_continue(&window, &control, index, total, Some(entry.source_path.clone())) {
+            break;
+        }
+
         let _ = window.emit(
             "batch-progress",
             BatchProgress {
                 completed: index,
                 total,
                 current_path: Some(entry.source_path.clone()),
+                state: BatchProgressState::Running,
             },
         );
 
@@ -388,11 +442,64 @@ fn process_batch_impl(window: Window, request: ProcessRequest) -> Result<Process
                 completed: index + 1,
                 total,
                 current_path: Some(entry.source_path.clone()),
+                state: BatchProgressState::Running,
             },
         );
+
+        if control.stop_requested.load(Ordering::SeqCst) {
+            let _ = window.emit(
+                "batch-progress",
+                BatchProgress {
+                    completed: index + 1,
+                    total,
+                    current_path: Some(entry.source_path.clone()),
+                    state: BatchProgressState::Stopping,
+                },
+            );
+            break;
+        }
     }
 
     Ok(ProcessResponse { results })
+}
+
+fn wait_until_batch_can_continue(
+    window: &Window,
+    control: &BatchControl,
+    completed: usize,
+    total: usize,
+    current_path: Option<String>,
+) -> bool {
+    while control.paused.load(Ordering::SeqCst) {
+        if control.stop_requested.load(Ordering::SeqCst) {
+            return false;
+        }
+        let _ = window.emit(
+            "batch-progress",
+            BatchProgress {
+                completed,
+                total,
+                current_path: current_path.clone(),
+                state: BatchProgressState::Paused,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(120));
+    }
+
+    if control.stop_requested.load(Ordering::SeqCst) {
+        let _ = window.emit(
+            "batch-progress",
+            BatchProgress {
+                completed,
+                total,
+                current_path,
+                state: BatchProgressState::Stopping,
+            },
+        );
+        return false;
+    }
+
+    true
 }
 
 fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path) -> Result<ProcessResultItem> {
@@ -904,12 +1011,16 @@ fn is_hidden_or_system(path: &Path) -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(BatchControl::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             inspect_inputs,
             process_batch,
+            pause_batch,
+            resume_batch,
+            stop_batch,
             get_default_output_dir
         ])
         .run(tauri::generate_context!())

@@ -99,4 +99,5 @@ export interface BatchProgress {
   completed: number;
   total: number;
   currentPath: string | null;
+  state?: "running" | "paused" | "stopping";
 }

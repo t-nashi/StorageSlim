@@ -235,6 +235,13 @@ function formatDimension(width: number | null, height: number | null): string {
   return `${width} x ${height}`;
 }
 
+function fileNameFromPath(path: string | null): string | null {
+  if (!path) {
+    return null;
+  }
+  return path.split(/[\\/]/).pop() ?? path;
+}
+
 function inputNameState(entry: InputEntry): "normal" | "accent" | "warning" {
   if (!entry.runtimeSupported) {
     return "warning";
@@ -474,6 +481,9 @@ function App() {
     currentPath: null,
   });
   const [busy, setBusy] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [inputLoading, setInputLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
@@ -545,6 +555,16 @@ function App() {
         unlistenProgress = await webview.listen<BatchProgress>("batch-progress", (event) => {
           if (active) {
             setProgress(event.payload);
+            if (event.payload.state === "paused") {
+              setPaused(true);
+            }
+            if (event.payload.state === "running") {
+              setPaused(false);
+            }
+            if (event.payload.state === "stopping") {
+              setStopping(true);
+              setPaused(false);
+            }
           }
         });
       } catch (error) {
@@ -659,7 +679,7 @@ function App() {
   const resizeValueMax = resizeValueUnit === "percent" ? 100 : 100000;
   const resizeValueRequired = !resizeValueDisabled;
   const resizeValueMissing = resizeValueRequired && (settings?.resize.value == null || settings.resize.value <= 0);
-  const canRunBatch = entries.length > 0 && !busy && !resizeValueMissing;
+  const canRunBatch = entries.length > 0 && !busy && !inputLoading && !resizeValueMissing;
 
   async function addPaths(paths: string[]) {
     if (paths.length === 0) {
@@ -676,11 +696,15 @@ function App() {
   }
 
   async function loadInputSourceDir() {
+    if (inputLoading) {
+      return;
+    }
     const path = inputSourceDir.trim();
     if (!path) {
       setErrorMessage("入力先フォルダのパスを指定してください。");
       return;
     }
+    setInputLoading(true);
     try {
       const files = await collectImageFilesInDirectory(path);
       if (files.length === 0) {
@@ -690,6 +714,8 @@ function App() {
       await addPaths(files);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setInputLoading(false);
     }
   }
 
@@ -759,12 +785,15 @@ function App() {
       return;
     }
     setBusy(true);
+    setPaused(false);
+    setStopping(false);
     setResults([]);
     setErrorMessage(null);
     setProgress({
       completed: 0,
       total: entries.length,
       currentPath: null,
+      state: "running",
     });
     try {
       const response = await invoke<ProcessResponse>("process_batch", {
@@ -778,10 +807,52 @@ function App() {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
+      setPaused(false);
+      setStopping(false);
       setProgress((current) => ({
         ...current,
         currentPath: null,
       }));
+    }
+  }
+
+  async function pauseBatch() {
+    if (!busy || paused || stopping) {
+      return;
+    }
+    setPaused(true);
+    try {
+      await invoke("pause_batch");
+    } catch (error) {
+      setPaused(false);
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function resumeBatch() {
+    if (!busy || !paused || stopping) {
+      return;
+    }
+    setPaused(false);
+    try {
+      await invoke("resume_batch");
+    } catch (error) {
+      setPaused(true);
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function stopBatch() {
+    if (!busy || stopping) {
+      return;
+    }
+    setStopping(true);
+    setPaused(false);
+    try {
+      await invoke("stop_batch");
+    } catch (error) {
+      setStopping(false);
+      setErrorMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -826,8 +897,25 @@ function App() {
     );
   }
 
+  const currentProgressName = fileNameFromPath(progress.currentPath);
+  const pausedEffective = paused || progress.state === "paused";
+  const stoppingEffective = stopping || progress.state === "stopping";
+  const progressLabel = busy
+    ? stoppingEffective
+      ? "停止中: 現在のファイル完了後に停止します"
+      : pausedEffective
+        ? "一時停止中"
+        : currentProgressName
+          ? `処理中: ${currentProgressName}`
+          : "処理を開始しています"
+    : "待機中";
+
   return (
-    <main className="app-shell">
+    <main
+      className={`app-shell ${busy ? "is-processing" : ""} ${pausedEffective ? "is-paused" : ""} ${
+        stoppingEffective ? "is-stopping" : ""
+      }`}
+    >
       <section className="app-header panel">
         <div>
           <p className="eyebrow">StorageSlim MVP</p>
@@ -1089,7 +1177,7 @@ function App() {
                     </strong>
                     {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
                   </div>
-                  <span>{progress.currentPath ?? "待機中"}</span>
+                  <span title={progress.currentPath ?? undefined}>{progressLabel}</span>
                 </div>
                 <div className="progress-bar">
                   <div
@@ -1100,14 +1188,32 @@ function App() {
                   />
                 </div>
               </div>
-              <button
-                type="button"
-                className="primary run-button"
-                disabled={!canRunBatch}
-                onClick={runBatch}
-              >
-                {busy ? "処理中..." : "最適化を実行"}
-              </button>
+              <div className="run-actions">
+                {busy ? (
+                  <>
+                    <button
+                      type="button"
+                      className="ghost run-control"
+                      disabled={stoppingEffective}
+                      onClick={pausedEffective ? resumeBatch : pauseBatch}
+                    >
+                      {pausedEffective ? "再開" : "一時停止"}
+                    </button>
+                    <button
+                      type="button"
+                      className="danger run-control"
+                      disabled={stoppingEffective}
+                      onClick={stopBatch}
+                    >
+                      {stoppingEffective ? "停止中..." : "停止"}
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="primary run-button" disabled={!canRunBatch} onClick={runBatch}>
+                    最適化を実行
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1128,7 +1234,7 @@ function App() {
                 <button type="button" className="ghost" onClick={pickInputFolder}>
                   参照
                 </button>
-                <button type="button" className="ghost" onClick={loadInputSourceDir}>
+                <button type="button" className="ghost" disabled={inputLoading || busy} onClick={loadInputSourceDir}>
                   読込
                 </button>
               </div>
@@ -1162,24 +1268,33 @@ function App() {
           </div>
 
           <div className="workspace-grid">
-            <section className={`subpanel ${entries.length === 0 ? "is-empty" : "has-rows"}`}>
+            <section className={`subpanel ${entries.length === 0 ? "is-empty" : "has-rows"} ${inputLoading ? "is-loading" : ""}`}>
               <div className="subpanel-header">
                 <div className="title-inline">
                   <h3>入力一覧</h3>
                   <span>{entries.length} 件</span>
                 </div>
                 <div className="subpanel-actions">
-                  <button type="button" className="ghost panel-action" onClick={pickFiles}>
+                  <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFiles}>
                     ファイル追加
                   </button>
-                  <button type="button" className="ghost panel-action" onClick={pickFolder}>
+                  <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFolder}>
                     フォルダ追加
                   </button>
-                  <button type="button" className="ghost panel-action" disabled={entries.length === 0} onClick={() => setEntries([])}>
+                  <button type="button" className="ghost panel-action" disabled={entries.length === 0 || inputLoading || busy} onClick={() => setEntries([])}>
                     入力をクリア
                   </button>
                 </div>
               </div>
+              {inputLoading ? (
+                <div className="inline-loading" role="status" aria-live="polite">
+                  <span className="loading-dot" />
+                  <span>入力ファイルを読込中...</span>
+                  <div className="loading-track">
+                    <div className="loading-track-fill" />
+                  </div>
+                </div>
+              ) : null}
               {skipped.length > 0 ? (
                 <details className="skip-details" open>
                   <summary>読み込めなかった項目: {skipped.length} 件</summary>
