@@ -41,7 +41,7 @@ function hasAllowedImageExtension(path: string): boolean {
 }
 
 function joinNativePath(parent: string, child: string): string {
-  return `${parent.replace(/[\\/]+$/, "")}\\${child}`;
+  return `${parent.replace(/[\\/]+$/, "")}/${child}`;
 }
 
 const outputOptions: Array<{ value: OutputFormat; label: string }> = [
@@ -112,7 +112,7 @@ function deriveDefaultInputDir(defaultOutputDir: string): string {
   if (/[\\/]output$/i.test(defaultOutputDir)) {
     return defaultOutputDir.replace(/[\\/]output$/i, (match) => match.replace(/output/i, "input"));
   }
-  return `${defaultOutputDir.replace(/[\\/]?$/, "")}\\input`;
+  return `${defaultOutputDir.replace(/[\\/]?$/, "")}/input`;
 }
 
 async function collectImageFilesInDirectory(rootPath: string): Promise<string[]> {

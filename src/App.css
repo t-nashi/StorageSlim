@@ -848,6 +848,7 @@ input:focus,
   border: 1px solid rgba(255, 190, 92, 0.22);
   background: rgba(255, 190, 92, 0.1);
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .skip-details summary {
@@ -863,6 +864,8 @@ input:focus,
   display: grid;
   gap: 10px;
   padding: 0 12px 12px;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .skip-item {
