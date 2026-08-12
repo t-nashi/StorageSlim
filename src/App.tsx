@@ -651,6 +651,15 @@ function App() {
   const totalSaved = useMemo(() => {
     return results.filter((result) => result.success).reduce((sum, result) => sum + (result.savedSize ?? 0), 0);
   }, [results]);
+  const totalSavedPercent = useMemo(() => {
+    const totalOriginal = results
+      .filter((result) => result.success)
+      .reduce((sum, result) => sum + (result.originalSize ?? 0), 0);
+    if (totalOriginal <= 0) {
+      return null;
+    }
+    return (totalSaved / totalOriginal) * 100;
+  }, [results, totalSaved]);
   const failedCount = useMemo(() => {
     return results.filter((result) => !result.success).length;
   }, [results]);
@@ -1370,7 +1379,10 @@ function App() {
                 <div className="title-inline">
                   <h3>結果</h3>
                   <span>{results.length} 件</span>
-                  <span className="saved-inline">Saved: {formatBytes(totalSaved)}</span>
+                  <span className="saved-inline">
+                    Saved: {formatBytes(totalSaved)}
+                    {totalSavedPercent != null ? ` / ${totalSavedPercent >= 0 ? "-" : "+"}${Math.abs(totalSavedPercent).toFixed(1)}%` : ""}
+                  </span>
                   {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
                 </div>
                 <button type="button" className="ghost panel-action" disabled={results.length === 0} onClick={() => setResults([])}>
