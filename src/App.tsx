@@ -16,9 +16,14 @@ import type {
   SkippedItem,
 } from "./types";
 import {
+  AVIF_MAX_DIMENSION,
+  AVIF_VIEWER_MAX_DIMENSION,
   DECODE_LIMIT_DEFAULT_MB,
   DECODE_LIMIT_MAX_MB,
   DECODE_LIMIT_MIN_MB,
+  GIF_MAX_DIMENSION,
+  JPEG_MAX_DIMENSION,
+  WEBP_MAX_DIMENSION,
 } from "./types";
 
 type ChoiceOption<T extends string> = {
@@ -101,6 +106,16 @@ function createDefaultSettings(defaultOutputDir: string): BatchSettings {
     decodeLimitMb: DECODE_LIMIT_DEFAULT_MB,
   };
 }
+
+/**
+ * 進捗表示の初期状態。アプリ起動直後と「結果をクリア」後で同じ値になるよう、
+ * 両方でこれを使う。`state` は未設定にしておくことで待機中の表示に戻る。
+ */
+const INITIAL_PROGRESS: BatchProgress = {
+  completed: 0,
+  total: 0,
+  currentPath: null,
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -267,8 +282,164 @@ function fileNameFromPath(path: string | null): string | null {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-function inputNameState(entry: InputEntry): "normal" | "accent" | "warning" {
-  if (!entry.runtimeSupported) {
+/** 実行前に予測できる問題。処理を待たずに入力一覧へ出す。 */
+type Preflight = {
+  /** danger: このままでは失敗する / warning: 出力はできるが注意が必要 */
+  level: "danger" | "warning";
+  /** 状態列のタグ文言。長くすると列が横に伸びるので短く保つ。 */
+  label: string;
+  /** ツールチップに出す詳細。 */
+  detail: string;
+};
+
+/**
+ * デコード後に必要となるピクセルバッファのおおよそのバイト数。
+ * 実際の色形式はデコードするまで確定しないため、形式ごとの代表値で見積もる。
+ * src-tauri 側の image クレート経由のデコードに対応する値。
+ */
+function estimatedDecodeBytes(width: number, height: number, format: InputEntry["format"]): number {
+  return width * height * (format === "jpeg" ? 3 : 4);
+}
+
+const OUTPUT_DIMENSION_LIMITS: Partial<Record<OutputFormat, { label: string; limit: number }>> = {
+  webp: { label: "WebP", limit: WEBP_MAX_DIMENSION },
+  jpeg: { label: "JPEG", limit: JPEG_MAX_DIMENSION },
+  gif: { label: "GIF", limit: GIF_MAX_DIMENSION },
+  avif: { label: "AVIF", limit: AVIF_MAX_DIMENSION },
+};
+
+/**
+ * 実際に書き出される形式を求める。Rust の resolve_output_format と対応。
+ * HEIC / HEIF のオリジナル維持はコピー出力なので寸法制限を持たない (null)。
+ */
+function resolveOutputFormat(entry: InputEntry, requested: OutputFormat): OutputFormat | null {
+  if (requested !== "original") {
+    return requested;
+  }
+  switch (entry.format) {
+    case "gif":
+      return "gif";
+    case "jpeg":
+      return "jpeg";
+    case "png":
+      return "png";
+    case "webp":
+      return "webp";
+    case "avif":
+      return "avif";
+    default:
+      return null;
+  }
+}
+
+/** リサイズ後の寸法。Rust の resize_target_dimensions と対応。 */
+function resizeTargetDimensions(
+  width: number,
+  height: number,
+  resize: BatchSettings["resize"],
+): [number, number] {
+  if (resize.mode === "none" || resize.value == null || resize.value <= 0) {
+    return [width, height];
+  }
+
+  let scaled: number;
+  if (resize.unit === "px") {
+    scaled = resize.value;
+  } else {
+    const basis =
+      resize.mode === "width" ? width : resize.mode === "height" ? height : Math.max(width, height);
+    scaled = Math.max(1, Math.round(basis * (resize.value / 100)));
+  }
+
+  let targetWidth: number;
+  let targetHeight: number;
+  if (resize.mode === "width") {
+    targetWidth = Math.max(1, Math.min(scaled, width));
+    targetHeight = Math.max(1, Math.round(height * (targetWidth / width)));
+  } else if (resize.mode === "height") {
+    targetHeight = Math.max(1, Math.min(scaled, height));
+    targetWidth = Math.max(1, Math.round(width * (targetHeight / height)));
+  } else {
+    const limited = Math.max(1, Math.min(scaled, Math.max(width, height)));
+    if (width >= height) {
+      targetWidth = limited;
+      targetHeight = Math.max(1, Math.round(height * (targetWidth / width)));
+    } else {
+      targetHeight = limited;
+      targetWidth = Math.max(1, Math.round(width * (targetHeight / height)));
+    }
+  }
+
+  // 拡大はしない。
+  if (targetWidth >= width && targetHeight >= height) {
+    return [width, height];
+  }
+  return [targetWidth, targetHeight];
+}
+
+/**
+ * 現在の設定でこの入力を処理した場合に予測される問題を列挙する。
+ *
+ * デコード上限・出力形式・リサイズ値のいずれを変えても即座に更新される。
+ * Rust 側の inspect は設定を知らないため、この判定はここで行う。
+ * 最終的な可否は Rust 側 (decode_input_image / check_encoder_dimensions) が決める。
+ */
+function computePreflight(entry: InputEntry, settings: BatchSettings | null): Preflight[] {
+  if (!settings || entry.width == null || entry.height == null) {
+    return [];
+  }
+
+  const items: Preflight[] = [];
+
+  // デコードは形式変換より前に走るので最初に見る。
+  // HEIC / HEIF は別デコーダを使うため、この上限は適用されない。
+  if (entry.format !== "heic" && entry.format !== "heif") {
+    const estimated = estimatedDecodeBytes(entry.width, entry.height, entry.format);
+    const decodeLimitBytes = settings.decodeLimitMb * 1024 * 1024;
+    if (estimated > decodeLimitBytes) {
+      items.push({
+        level: "danger",
+        label: `デコードに約 ${formatBytes(estimated)} 必要 (上限 ${formatBytes(decodeLimitBytes)})`,
+        detail: `デコードに約 ${formatBytes(estimated)} のメモリが必要で、上限 ${formatBytes(decodeLimitBytes)} を超えています。「品質調整・その他」のデコード上限を上げるか、対象を変えてください。`,
+      });
+    }
+  }
+
+  const outputFormat = resolveOutputFormat(entry, settings.outputFormat);
+  if (!outputFormat) {
+    return items;
+  }
+
+  const [width, height] = resizeTargetDimensions(entry.width, entry.height, settings.resize);
+  const hardLimit = OUTPUT_DIMENSION_LIMITS[outputFormat];
+  if (hardLimit && (width > hardLimit.limit || height > hardLimit.limit)) {
+    items.push({
+      level: "danger",
+      label: `${hardLimit.label} 上限 ${hardLimit.limit} px 超`,
+      detail: `${hardLimit.label} は幅・高さとも ${hardLimit.limit} px までです（出力予定 ${width} x ${height}）。リサイズすると出力できます。`,
+    });
+  } else if (
+    outputFormat === "avif" &&
+    (width > AVIF_VIEWER_MAX_DIMENSION || height > AVIF_VIEWER_MAX_DIMENSION)
+  ) {
+    items.push({
+      level: "warning",
+      label: `主要ビューア上限 ${AVIF_VIEWER_MAX_DIMENSION} px 超`,
+      detail: `${width} x ${height} は主要ビューア（libavif 系）の上限 ${AVIF_VIEWER_MAX_DIMENSION} px を超えるため、出力した AVIF を開けない場合があります。`,
+    });
+  }
+
+  return items;
+}
+
+function inputNameState(
+  entry: InputEntry,
+  preflights: Preflight[],
+): "normal" | "accent" | "warning" | "danger" {
+  if (preflights.some((item) => item.level === "danger")) {
+    return "danger";
+  }
+  if (!entry.runtimeSupported || preflights.length > 0) {
     return "warning";
   }
   return entry.animated ? "accent" : "normal";
@@ -500,11 +671,7 @@ function App() {
   const [entries, setEntries] = useState<InputEntry[]>([]);
   const [skipped, setSkipped] = useState<SkippedItem[]>([]);
   const [results, setResults] = useState<ProcessResponse["results"]>([]);
-  const [progress, setProgress] = useState<BatchProgress>({
-    completed: 0,
-    total: 0,
-    currentPath: null,
-  });
+  const [progress, setProgress] = useState<BatchProgress>({ ...INITIAL_PROGRESS });
   const [busy, setBusy] = useState(false);
   const [paused, setPaused] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -720,10 +887,7 @@ function App() {
       return;
     }
     try {
-      const response = await invoke<InspectResponse>("inspect_inputs", {
-        paths,
-        decodeLimitMb: settings?.decodeLimitMb ?? DECODE_LIMIT_DEFAULT_MB,
-      });
+      const response = await invoke<InspectResponse>("inspect_inputs", { paths });
       setEntries((current) => mergeEntries(current, response.entries));
       setSkipped((current) => current.concat(response.skipped));
       setErrorMessage(null);
@@ -851,6 +1015,22 @@ function App() {
         currentPath: null,
       }));
     }
+  }
+
+  /**
+   * 入力一覧を起動直後の状態へ戻す。
+   * 「読み込めなかった項目」も入力の読込結果なので一緒に消す。
+   * これを残すと、入力 0 件でボタンが無効になり消す手段がなくなる。
+   */
+  function clearInputs() {
+    setEntries([]);
+    setSkipped([]);
+  }
+
+  /** 結果一覧と、それに紐づく進捗表示をまとめて起動直後の状態へ戻す。 */
+  function clearResults() {
+    setResults([]);
+    setProgress({ ...INITIAL_PROGRESS });
   }
 
   async function pauseBatch() {
@@ -1355,7 +1535,12 @@ function App() {
                   <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFolder}>
                     フォルダ追加
                   </button>
-                  <button type="button" className="ghost panel-action" disabled={entries.length === 0 || inputLoading || busy} onClick={() => setEntries([])}>
+                  <button
+                    type="button"
+                    className="ghost panel-action"
+                    disabled={(entries.length === 0 && skipped.length === 0) || inputLoading || busy}
+                    onClick={clearInputs}
+                  >
                     入力をクリア
                   </button>
                 </div>
@@ -1387,7 +1572,7 @@ function App() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>ファイル</th>
+                      <th className="cell-path">ファイル</th>
                       <th>形式</th>
                       <th>寸法</th>
                       <th>サイズ</th>
@@ -1402,14 +1587,24 @@ function App() {
                         </td>
                       </tr>
                     ) : (
-                      entries.map((entry) => (
+                      entries.map((entry) => {
+                        const preflights = computePreflight(entry, settings);
+                        const hasDanger = preflights.some((item) => item.level === "danger");
+                        return (
                         <tr key={entry.id}>
-                          <td>
+                          <td className="cell-path">
                             <div className="file-cell">
-                              <strong title={entry.fileName} className={`file-name file-name-${inputNameState(entry)}`}>
+                              <strong
+                                title={entry.fileName}
+                                className={`file-name file-name-${inputNameState(entry, preflights)}`}
+                              >
                                 {entry.fileName}
-                                {!entry.runtimeSupported ? (
+                                {hasDanger ? (
+                                  <span className="file-name-indicator">失敗予測</span>
+                                ) : !entry.runtimeSupported ? (
                                   <span className="file-name-indicator">制約</span>
+                                ) : preflights.length > 0 ? (
+                                  <span className="file-name-indicator">注意</span>
                                 ) : entry.animated ? (
                                   <span className="file-name-indicator">animation</span>
                                 ) : null}
@@ -1424,6 +1619,11 @@ function App() {
                             <div className="tag-list">
                               {entry.animated ? <span className="tag accent">animation</span> : null}
                               {!entry.runtimeSupported ? <span className="tag warning">runtime 制約</span> : null}
+                              {preflights.map((item) => (
+                                <span key={item.label} className={`tag ${item.level}`} title={item.detail}>
+                                  {item.label}
+                                </span>
+                              ))}
                               {entry.warnings.map((warning) => (
                                 <span key={warning} className="tag subtle" title={warning}>
                                   {warning}
@@ -1432,7 +1632,8 @@ function App() {
                             </div>
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -1452,7 +1653,12 @@ function App() {
                   </span>
                   {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
                 </div>
-                <button type="button" className="ghost panel-action" disabled={results.length === 0} onClick={() => setResults([])}>
+                <button
+                  type="button"
+                  className="ghost panel-action"
+                  disabled={results.length === 0 || busy}
+                  onClick={clearResults}
+                >
                   結果をクリア
                 </button>
               </div>
@@ -1460,8 +1666,8 @@ function App() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>入力</th>
-                      <th>出力</th>
+                      <th className="cell-path">入力</th>
+                      <th className="cell-path">出力</th>
                       <th>Original</th>
                       <th>Optimized</th>
                       <th>Saved</th>
@@ -1478,7 +1684,7 @@ function App() {
                     ) : (
                       results.map((result) => (
                         <tr key={`${result.sourcePath}-${result.outputPath ?? "error"}`}>
-                          <td>
+                          <td className="cell-path">
                             <div className="file-cell">
                               <strong
                                 title={result.sourcePath.split(/[\\/]/).pop() ?? ""}
@@ -1496,7 +1702,7 @@ function App() {
                               <small title={result.sourcePath}>{result.sourcePath}</small>
                             </div>
                           </td>
-                          <td>
+                          <td className="cell-path">
                             <div className="file-cell">
                               <strong title={result.outputFormat ?? "-"}>{result.outputFormat ?? "-"}</strong>
                               <small title={result.outputPath ?? result.reason ?? "-"}>{result.outputPath ?? result.reason ?? "-"}</small>

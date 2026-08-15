@@ -53,7 +53,7 @@ fn inspect_repo_samples_reports_expected_flags() {
     let sample_dir = repo_sample_dir();
     assert!(sample_dir.exists(), "sample directory is missing: {}", sample_dir.display());
 
-    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
     assert!(response.skipped.is_empty());
     assert_eq!(response.entries.len(), 8);
 
@@ -78,7 +78,7 @@ fn inspect_desktop_samples_reports_expected_flags() {
     let sample_dir = desktop_sample_dir();
     assert!(sample_dir.exists(), "desktop sample directory is missing: {}", sample_dir.display());
 
-    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
     assert!(response.skipped.is_empty(), "skipped: {:?}", response.skipped);
     assert_eq!(response.entries.len(), 8);
 
@@ -101,7 +101,7 @@ fn inspect_desktop_samples_reports_expected_flags() {
 #[test]
 fn repo_samples_process_or_fail_as_expected() {
     let sample_dir = repo_sample_dir();
-    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
     assert!(response.skipped.is_empty());
     let output_root = temp_dir("repo-samples-output");
     let settings = default_test_settings(&output_root);

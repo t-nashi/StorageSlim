@@ -226,12 +226,8 @@ struct BatchControl {
 }
 
 #[tauri::command]
-async fn inspect_inputs(
-    paths: Vec<String>,
-    decode_limit_mb: Option<u32>,
-) -> Result<InspectResponse, String> {
-    let decode_limit_mb = decode_limit_mb.unwrap_or(DECODE_LIMIT_DEFAULT_MB);
-    tauri::async_runtime::spawn_blocking(move || inspect_inputs_impl(paths, decode_limit_mb))
+async fn inspect_inputs(paths: Vec<String>) -> Result<InspectResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || inspect_inputs_impl(paths))
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| format!("{error:#}"))
@@ -276,7 +272,7 @@ fn get_default_output_dir() -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-fn inspect_inputs_impl(paths: Vec<String>, decode_limit_mb: u32) -> Result<InspectResponse> {
+fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
     let mut entries = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = HashSet::new();
@@ -302,7 +298,7 @@ fn inspect_inputs_impl(paths: Vec<String>, decode_limit_mb: u32) -> Result<Inspe
                     .unwrap_or(path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                match inspect_single_safe(path, &root, &relative, decode_limit_mb) {
+                match inspect_single_safe(path, &root, &relative) {
                     Ok(entry) => {
                         if seen.insert(entry.source_path.clone()) {
                             entries.push(entry);
@@ -319,7 +315,7 @@ fn inspect_inputs_impl(paths: Vec<String>, decode_limit_mb: u32) -> Result<Inspe
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| root.to_string_lossy().to_string());
-            match inspect_single_safe(&root, &root, &relative, decode_limit_mb) {
+            match inspect_single_safe(&root, &root, &relative) {
                 Ok(entry) => {
                     if seen.insert(entry.source_path.clone()) {
                         entries.push(entry);
@@ -337,21 +333,11 @@ fn inspect_inputs_impl(paths: Vec<String>, decode_limit_mb: u32) -> Result<Inspe
     Ok(InspectResponse { entries, skipped })
 }
 
-fn inspect_single_safe(
-    path: &Path,
-    root: &Path,
-    relative: &str,
-    decode_limit_mb: u32,
-) -> Result<InputEntry> {
-    catch_task_panic("inspection", || inspect_single(path, root, relative, decode_limit_mb))
+fn inspect_single_safe(path: &Path, root: &Path, relative: &str) -> Result<InputEntry> {
+    catch_task_panic("inspection", || inspect_single(path, root, relative))
 }
 
-fn inspect_single(
-    path: &Path,
-    root: &Path,
-    relative: &str,
-    decode_limit_mb: u32,
-) -> Result<InputEntry> {
+fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry> {
     let format = detect_input_format(path).ok_or_else(|| anyhow!("unsupported format"))?;
     let metadata = fs::metadata(path).with_context(|| format!("failed to read metadata: {}", path.display()))?;
     let file_size = metadata.len();
@@ -385,20 +371,6 @@ fn inspect_single(
         }
     };
 
-    // 寸法が大きい画像は、形式やエンコーダの制限とは別に、デコード段階の
-    // メモリ上限で弾かれる。処理前に気づけるよう入力一覧へ出しておく。
-    if let (Some(width), Some(height)) = (width, height) {
-        let estimated = estimated_decode_bytes(width, height, &format);
-        let limit = decode_limit_bytes(decode_limit_mb);
-        if estimated > limit {
-            warnings.push(format!(
-                "デコードに約 {} 必要 (上限 {})",
-                format_bytes_short(estimated),
-                format_bytes_short(limit)
-            ));
-        }
-    }
-
     Ok(InputEntry {
         id: path.to_string_lossy().to_string(),
         source_path: path.to_string_lossy().to_string(),
@@ -427,31 +399,6 @@ const DECODE_LIMIT_MAX_MB: u32 = 8192;
 /// UI から渡された MB 値を、実際に使うバイト数へ変換する。
 fn decode_limit_bytes(decode_limit_mb: u32) -> u64 {
     u64::from(decode_limit_mb.clamp(DECODE_LIMIT_MIN_MB, DECODE_LIMIT_MAX_MB)) * 1024 * 1024
-}
-
-/// デコード後に必要となるピクセルバッファのおおよそのバイト数。
-/// 実際の色形式はデコードするまで確定しないため、形式ごとの代表値で見積もる。
-fn estimated_decode_bytes(width: u32, height: u32, format: &InputFormat) -> u64 {
-    let bytes_per_pixel = match format {
-        InputFormat::Jpeg => 3,
-        _ => 4,
-    };
-    u64::from(width)
-        .saturating_mul(u64::from(height))
-        .saturating_mul(bytes_per_pixel)
-}
-
-/// タグ表示に載せる短い容量表記。
-fn format_bytes_short(bytes: u64) -> String {
-    const UNIT: f64 = 1024.0;
-    let value = bytes as f64;
-    if value >= UNIT * UNIT * UNIT {
-        format!("{:.1} GB", value / (UNIT * UNIT * UNIT))
-    } else if value >= UNIT * UNIT {
-        format!("{:.0} MB", value / (UNIT * UNIT))
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 fn catch_task_panic<T, F>(label: &str, task: F) -> Result<T>
@@ -603,7 +550,7 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
                 "アニメーション GIF は GIF 以外の形式へ変換できません。"
             ));
         }
-        process_animated_gif(entry, settings, &output_path)?;
+        process_animated_gif(entry, settings, &output_path, &mut warnings)?;
     } else {
         process_static_image(entry, settings, output_format, &output_path, &mut warnings)?;
     }
@@ -701,6 +648,11 @@ fn process_static_image(
     check_encoder_dimensions(width, height, output_format, warnings)?;
 
     let encoded = encode_static_image(&resized, settings, output_format)?;
+    if can_fall_back_to_source_copy(entry, settings, encoded.len() as u64) {
+        warnings.push("再圧縮すると大きくなるため元ファイルをコピー".to_string());
+        return copy_source_as_output(entry, output_path);
+    }
+
     fs::write(output_path, encoded)
         .with_context(|| format!("failed to write output: {}", output_path.display()))?;
 
@@ -767,6 +719,47 @@ fn encode_static_image(
     Ok(buffer)
 }
 
+/// 元ファイルをそのまま出力先へ複製する。失敗時に中途半端な出力を残さない。
+fn copy_source_as_output(entry: &InputEntry, output_path: &Path) -> Result<()> {
+    if let Err(error) = fs::copy(&entry.source_path, output_path) {
+        let _ = fs::remove_file(output_path);
+        return Err(error).with_context(|| {
+            format!("failed to copy source to output: {}", output_path.display())
+        });
+    }
+    Ok(())
+}
+
+/// 再エンコード結果が元より大きい場合に、元ファイルのコピーで代替してよいか判定する。
+///
+/// 圧縮ツールとして「元より膨らんだ出力」を残す意味はないが、
+/// ユーザーが明示した変換 (形式・寸法・メタデータ) を無視してはいけない。
+/// コピーで指示を満たせるケースに限って代替する。
+fn can_fall_back_to_source_copy(
+    entry: &InputEntry,
+    settings: &BatchSettings,
+    encoded_len: u64,
+) -> bool {
+    // 元より小さくなっているなら、そのまま出力する。
+    if encoded_len <= entry.file_size {
+        return false;
+    }
+    // 形式変換を指定している場合、その形式で出力しなければ指示違反になる。
+    if !matches!(settings.output_format, OutputFormat::Original) {
+        return false;
+    }
+    // メタデータ削除は再エンコードによって実現しているため、コピーでは満たせない。
+    if matches!(settings.metadata_mode, MetadataMode::Strip) {
+        return false;
+    }
+    // リサイズで寸法が変わる指定なら、コピーでは満たせない。
+    let (Some(width), Some(height)) = (entry.width, entry.height) else {
+        return false;
+    };
+    let (target_width, target_height) = resize_target_dimensions(width, height, &settings.resize);
+    target_width == width && target_height == height
+}
+
 fn process_heif_original_copy(
     entry: &InputEntry,
     settings: &BatchSettings,
@@ -784,17 +777,15 @@ fn process_heif_original_copy(
     }
 
     warnings.push("HEIC / HEIF のオリジナル維持出力は再圧縮せずコピーします。".to_string());
-    // コピーが途中で失敗した場合、中途半端な出力ファイルを残さない。
-    if let Err(error) = fs::copy(&entry.source_path, output_path) {
-        let _ = fs::remove_file(output_path);
-        return Err(error).with_context(|| {
-            format!("failed to copy source to output: {}", output_path.display())
-        });
-    }
-    Ok(())
+    copy_source_as_output(entry, output_path)
 }
 
-fn process_animated_gif(entry: &InputEntry, settings: &BatchSettings, output_path: &Path) -> Result<()> {
+fn process_animated_gif(
+    entry: &InputEntry,
+    settings: &BatchSettings,
+    output_path: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
     let file = File::open(&entry.source_path)?;
     let mut decoder = DecodeOptions::new();
     decoder.set_color_output(ColorOutput::RGBA);
@@ -816,6 +807,13 @@ fn process_animated_gif(entry: &InputEntry, settings: &BatchSettings, output_pat
             GifEncoder::new(&mut buffer, target_width as u16, target_height as u16, &[])?;
         encoder.set_repeat(Repeat::Infinite)?;
 
+        // 合成済みフレームを 1 枚だけ先読みする。
+        // 「次フレームでキャンバスを消す必要があるか」が、今のフレームの dispose を決めるため。
+        let mut pending: Option<(RgbaImage, u16)> = None;
+        // 直前に書き出した結果、画面に出ている状態。差分矩形の基準になる。
+        let mut screen: Option<RgbaImage> = None;
+        let speed = gif_speed_from_colors(settings.quality.gif_colors);
+
         while let Some(frame) = reader.read_next_frame()? {
             // Previous 指定のフレームは、描画前の状態を後で復元する必要がある。
             let restore_point = match frame.dispose {
@@ -836,19 +834,24 @@ fn process_animated_gif(entry: &InputEntry, settings: &BatchSettings, output_pat
                 )
             };
 
-            let mut raw = composed.into_raw();
-            let mut out_frame = GifFrame::from_rgba_speed(
-                target_width as u16,
-                target_height as u16,
-                raw.as_mut_slice(),
-                gif_speed_from_colors(settings.quality.gif_colors),
-            );
-            out_frame.delay = frame.delay;
-            // 各フレームを合成済みの完成画として書き出すため、次フレームの前に
-            // キャンバスを消す。元フレームの dispose / transparent は、パレットも
-            // 部分矩形も変わっているのでそのまま引き継いではいけない。
-            out_frame.dispose = DisposalMethod::Background;
-            encoder.write_frame(&out_frame)?;
+            if let Some((previous, delay)) = pending.take() {
+                // 次が composed なので、previous を書き出す際の dispose を決められる。
+                let clear_after = requires_canvas_clear(&previous, &composed);
+                write_composed_gif_frame(
+                    &mut encoder,
+                    &previous,
+                    screen.as_ref(),
+                    delay,
+                    clear_after,
+                    speed,
+                )?;
+                screen = Some(if clear_after {
+                    RgbaImage::new(target_width, target_height)
+                } else {
+                    previous
+                });
+            }
+            pending = Some((composed, frame.delay));
 
             // 元 GIF の廃棄方法を、次フレームの合成用キャンバスへ反映する。
             match frame.dispose {
@@ -861,12 +864,104 @@ fn process_animated_gif(entry: &InputEntry, settings: &BatchSettings, output_pat
                 DisposalMethod::Any | DisposalMethod::Keep => {}
             }
         }
+
+        // 最終フレームには次がないので、キャンバスを消す必要はない。
+        if let Some((last, delay)) = pending {
+            write_composed_gif_frame(&mut encoder, &last, screen.as_ref(), delay, false, speed)?;
+        }
+    }
+
+    if can_fall_back_to_source_copy(entry, settings, buffer.len() as u64) {
+        warnings.push("再圧縮すると大きくなるため元ファイルをコピー".to_string());
+        return copy_source_as_output(entry, output_path);
     }
 
     fs::write(output_path, buffer)
         .with_context(|| format!("failed to write output: {}", output_path.display()))?;
 
     Ok(())
+}
+
+/// 不透明から透明へ変化した画素があるか。
+///
+/// GIF の透過は「下を透かす」意味なので、重ね描きでは不透明を透明へ戻せない。
+/// その場合は前フレームを Background 廃棄にしてキャンバスを消す必要がある。
+fn requires_canvas_clear(current: &RgbaImage, next: &RgbaImage) -> bool {
+    current
+        .pixels()
+        .zip(next.pixels())
+        .any(|(now, later)| now[3] != 0 && later[3] == 0)
+}
+
+/// 合成済みフレームを、直前の画面との差分矩形として書き出す。
+///
+/// 全面で書き直すと元 GIF が持っていた差分最適化が失われてサイズが膨らむため、
+/// 変化のあった矩形だけを重ねる。
+fn write_composed_gif_frame<W: std::io::Write>(
+    encoder: &mut GifEncoder<W>,
+    target: &RgbaImage,
+    screen: Option<&RgbaImage>,
+    delay: u16,
+    clear_after: bool,
+    speed: i32,
+) -> Result<()> {
+    let dispose = if clear_after {
+        DisposalMethod::Background
+    } else {
+        DisposalMethod::Keep
+    };
+
+    // 直前の画面が無い (最初のフレーム) 場合は全面を書く。
+    let rect = match screen {
+        None => Some((0, 0, target.width(), target.height())),
+        Some(screen) => changed_rect(screen, target),
+    };
+
+    let Some((left, top, width, height)) = rect else {
+        // 変化なし。タイミングだけ維持するための最小フレームを置く。
+        let mut raw = [0u8; 4];
+        let mut out_frame = GifFrame::from_rgba_speed(1, 1, &mut raw, speed);
+        out_frame.delay = delay;
+        out_frame.dispose = dispose;
+        encoder.write_frame(&out_frame)?;
+        return Ok(());
+    };
+
+    let cropped = image::imageops::crop_imm(target, left, top, width, height).to_image();
+    let mut raw = cropped.into_raw();
+    let mut out_frame =
+        GifFrame::from_rgba_speed(width as u16, height as u16, raw.as_mut_slice(), speed);
+    out_frame.left = left as u16;
+    out_frame.top = top as u16;
+    out_frame.delay = delay;
+    out_frame.dispose = dispose;
+    encoder.write_frame(&out_frame)?;
+    Ok(())
+}
+
+/// 変化のあった画素を囲む最小矩形。変化が無ければ None。
+fn changed_rect(screen: &RgbaImage, target: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    let mut min_x = u32::MAX;
+    let mut min_y = u32::MAX;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+
+    for y in 0..target.height() {
+        for x in 0..target.width() {
+            if screen.get_pixel(x, y) == target.get_pixel(x, y) {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    if min_x == u32::MAX {
+        return None;
+    }
+    Some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
 }
 
 /// 部分矩形フレームを left / top の位置へ合成する。
@@ -1317,7 +1412,7 @@ mod tests {
         let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(10, 8, Rgba([255, 0, 0, 255]));
         image.save(&path).unwrap();
 
-        let response = inspect_inputs_impl(vec![path.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let response = inspect_inputs_impl(vec![path.to_string_lossy().to_string()]).unwrap();
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].width, Some(10));
         assert_eq!(response.entries[0].height, Some(8));
@@ -1330,7 +1425,7 @@ mod tests {
         let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(40, 30, Rgba([0, 120, 255, 255]));
         image.save(&input).unwrap();
 
-        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()]).unwrap();
         let entry = inspect.entries[0].clone();
         let settings = BatchSettings {
             output_format: OutputFormat::Jpeg,
@@ -1501,7 +1596,7 @@ mod tests {
         let input = dir.join("anim.gif");
         write_animated_gif(&input);
 
-        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()]).unwrap();
         let entry = inspect.entries[0].clone();
         assert!(entry.animated);
 
@@ -1542,32 +1637,50 @@ mod tests {
         assert_eq!((canvas_width, canvas_height), (20, 10));
         assert_eq!(frames, 2);
 
-        // 各フレームもキャンバスと同じ寸法で書かれていること。
+        // 先頭フレームは全面、以降は差分矩形として書かれていること。
+        // (全面のまま書くと元 GIF の差分最適化が失われてサイズが膨らむ)
         let file = File::open(&output_path).unwrap();
         let mut options = DecodeOptions::new();
         options.set_color_output(ColorOutput::RGBA);
         let mut reader = options.read_info(file).unwrap();
-        while let Some(frame) = reader.read_next_frame().unwrap() {
-            assert_eq!((frame.width, frame.height), (20, 10));
-            assert_eq!((frame.left, frame.top), (0, 0));
-        }
+
+        let first = reader.read_next_frame().unwrap().unwrap();
+        assert_eq!((first.width, first.height), (20, 10));
+        assert_eq!((first.left, first.top), (0, 0));
+
+        let second = reader.read_next_frame().unwrap().unwrap();
+        assert!(
+            second.width < 20 || second.height < 10 || second.left > 0 || second.top > 0,
+            "2 コマ目が全面のまま: {}x{}+{}+{}",
+            second.width,
+            second.height,
+            second.left,
+            second.top
+        );
     }
 
     #[test]
-    fn oversized_input_is_flagged_before_processing() {
-        // 29166 x 32768 の JPEG は約 2.7 GB 必要で、512 MB の上限を超える。
-        let default_limit = decode_limit_bytes(DECODE_LIMIT_DEFAULT_MB);
-        let huge = estimated_decode_bytes(29166, 32768, &InputFormat::Jpeg);
-        assert!(huge > default_limit);
-        assert_eq!(format_bytes_short(huge), "2.7 GB");
+    fn changed_rect_finds_minimal_bounds() {
+        let mut screen = RgbaImage::from_pixel(10, 10, Rgba([0, 0, 0, 255]));
+        assert_eq!(changed_rect(&screen, &screen.clone()), None);
 
-        // 一般的な写真サイズは超えない (誤検知しないこと)。
-        assert!(estimated_decode_bytes(6000, 4000, &InputFormat::Jpeg) < default_limit);
-        assert_eq!(format_bytes_short(default_limit), "512 MB");
+        let mut target = screen.clone();
+        target.put_pixel(3, 4, Rgba([255, 0, 0, 255]));
+        target.put_pixel(5, 6, Rgba([255, 0, 0, 255]));
+        assert_eq!(changed_rect(&screen, &target), Some((3, 4, 3, 3)));
 
-        // 上限を上げれば警告の閾値も追随する。
-        assert!(huge < decode_limit_bytes(4096));
-        // 範囲外の指定はクランプされる。
+        // 不透明 -> 透明 はキャンバス消去が必要と判定されること。
+        assert!(!requires_canvas_clear(&screen, &target));
+        screen.put_pixel(0, 0, Rgba([9, 9, 9, 255]));
+        let mut cleared = screen.clone();
+        cleared.put_pixel(0, 0, Rgba([0, 0, 0, 0]));
+        assert!(requires_canvas_clear(&screen, &cleared));
+    }
+
+    #[test]
+    fn decode_limit_is_clamped_to_supported_range() {
+        assert_eq!(decode_limit_bytes(DECODE_LIMIT_DEFAULT_MB), 512 * 1024 * 1024);
+        // 範囲外の指定はクランプされる。設定ファイルを直接書き換えられても壊れない。
         assert_eq!(decode_limit_bytes(0), decode_limit_bytes(DECODE_LIMIT_MIN_MB));
         assert_eq!(decode_limit_bytes(99_999), decode_limit_bytes(DECODE_LIMIT_MAX_MB));
     }
@@ -1580,7 +1693,7 @@ mod tests {
         let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(8, 8, Rgba([1, 2, 3, 255]));
         image.save(&input).unwrap();
 
-        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()]).unwrap();
         let entry = inspect.entries[0].clone();
         let settings = BatchSettings {
             output_format: OutputFormat::Jpeg,
@@ -1624,7 +1737,7 @@ mod tests {
         let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(16384, 8, Rgba([10, 20, 30, 255]));
         image.save(&input).unwrap();
 
-        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()]).unwrap();
         let entry = inspect.entries[0].clone();
         let settings = BatchSettings {
             output_format: OutputFormat::Webp,
