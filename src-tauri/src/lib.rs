@@ -1660,6 +1660,153 @@ mod tests {
     }
 
     #[test]
+    fn copy_fallback_only_when_copy_satisfies_the_request() {
+        let entry = InputEntry {
+            id: "a.png".to_string(),
+            source_path: "a.png".to_string(),
+            root_path: "a.png".to_string(),
+            relative_path: "a.png".to_string(),
+            file_name: "a.png".to_string(),
+            format: InputFormat::Png,
+            format_label: "PNG".to_string(),
+            file_size: 1_000,
+            width: Some(100),
+            height: Some(100),
+            animated: false,
+            runtime_supported: true,
+            warnings: vec![],
+        };
+        // オリジナル維持 / メタデータ保持 / リサイズなし = コピーで指示を満たせる状態。
+        let base = BatchSettings {
+            output_format: OutputFormat::Original,
+            output_mode: OutputMode::Custom,
+            custom_output_dir: Some("out".to_string()),
+            overwrite: false,
+            resize: ResizeSettings {
+                mode: ResizeMode::None,
+                value: None,
+                unit: ResizeUnit::Px,
+            },
+            quality: QualitySettings {
+                jpeg_quality: 80,
+                webp_quality: 80.0,
+                avif_quality: 50,
+                png_compression: 6,
+                gif_colors: 128,
+            },
+            metadata_mode: MetadataMode::Keep,
+            timestamps: TimestampSettings {
+                preserve_creation_time: false,
+                preserve_last_write_time: false,
+            },
+            decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
+        };
+
+        // 元より大きくなるならコピーする。小さくなるなら通常どおり出力する。
+        assert!(can_fall_back_to_source_copy(&entry, &base, 2_000));
+        assert!(!can_fall_back_to_source_copy(&entry, &base, 500));
+        assert!(!can_fall_back_to_source_copy(&entry, &base, 1_000));
+
+        // 形式変換を指定している場合、その形式で出力しなければ指示違反になる。
+        let mut converted = base.clone();
+        converted.output_format = OutputFormat::Jpeg;
+        assert!(!can_fall_back_to_source_copy(&entry, &converted, 2_000));
+
+        // メタデータ削除は再エンコードでしか実現できないため、コピーで代替できない。
+        let mut stripped = base.clone();
+        stripped.metadata_mode = MetadataMode::Strip;
+        assert!(!can_fall_back_to_source_copy(&entry, &stripped, 2_000));
+
+        // 寸法が変わるリサイズ指定も、コピーでは満たせない。
+        let mut resized = base.clone();
+        resized.resize = ResizeSettings {
+            mode: ResizeMode::LongEdge,
+            value: Some(50),
+            unit: ResizeUnit::Percent,
+        };
+        assert!(!can_fall_back_to_source_copy(&entry, &resized, 2_000));
+
+        // リサイズ指定でも寸法が変わらないならコピーできる。
+        let mut same_size = base.clone();
+        same_size.resize = ResizeSettings {
+            mode: ResizeMode::LongEdge,
+            value: Some(100),
+            unit: ResizeUnit::Percent,
+        };
+        assert!(can_fall_back_to_source_copy(&entry, &same_size, 2_000));
+    }
+
+    /// リポジトリ同梱のサンプルで、オリジナル維持のフォールバックが実際に働くか確認する。
+    #[test]
+    fn repo_samples_fall_back_to_copy_on_size_increase() {
+        let repo_samples = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("samples")
+            .join("size-increase");
+
+        for name in ["indexed-320x200.png", "lowquality-640x480.jpg"] {
+            let input = repo_samples.join(name);
+            let dir = temp_dir(&format!("copy-fallback-{name}"));
+            let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()]).unwrap();
+            let entry = inspect.entries[0].clone();
+
+            let mut settings = BatchSettings {
+                output_format: OutputFormat::Original,
+                output_mode: OutputMode::Custom,
+                custom_output_dir: Some(dir.join("out").to_string_lossy().to_string()),
+                overwrite: false,
+                resize: ResizeSettings {
+                    mode: ResizeMode::None,
+                    value: None,
+                    unit: ResizeUnit::Px,
+                },
+                quality: QualitySettings {
+                    jpeg_quality: 82,
+                    webp_quality: 80.0,
+                    avif_quality: 55,
+                    png_compression: 6,
+                    gif_colors: 128,
+                },
+                metadata_mode: MetadataMode::Keep,
+                timestamps: TimestampSettings {
+                    preserve_creation_time: false,
+                    preserve_last_write_time: false,
+                },
+                decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
+            };
+            let output_root = resolve_output_root(&settings).unwrap();
+            fs::create_dir_all(&output_root).unwrap();
+
+            // メタデータ保持 = コピーで指示を満たせるので、元をそのまま複製する。
+            let kept = process_one(&entry, &settings, &output_root).unwrap();
+            assert!(kept.success, "{name}");
+            assert_eq!(kept.saved_size, Some(0), "{name} はコピーされるはず");
+            assert!(
+                kept.warnings.iter().any(|w| w.contains("元ファイルをコピー")),
+                "{name}: コピーの警告が無い: {:?}",
+                kept.warnings
+            );
+            let copied = fs::read(kept.output_path.as_ref().unwrap()).unwrap();
+            assert_eq!(copied, fs::read(&input).unwrap(), "{name} がバイト一致しない");
+
+            // メタデータ削除は再エンコードでしか実現できないため、コピーしてはいけない。
+            settings.metadata_mode = MetadataMode::Strip;
+            let stripped = process_one(&entry, &settings, &output_root).unwrap();
+            assert!(stripped.success, "{name}");
+            assert!(
+                stripped.saved_size.unwrap() < 0,
+                "{name}: メタデータ削除では再エンコードされ増加するはず ({:?})",
+                stripped.saved_size
+            );
+            assert!(
+                !stripped.warnings.iter().any(|w| w.contains("元ファイルをコピー")),
+                "{name}: メタデータ削除なのにコピーされた"
+            );
+        }
+    }
+
+    #[test]
     fn changed_rect_finds_minimal_bounds() {
         let mut screen = RgbaImage::from_pixel(10, 10, Rgba([0, 0, 0, 255]));
         assert_eq!(changed_rect(&screen, &screen.clone()), None);

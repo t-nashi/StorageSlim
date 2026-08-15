@@ -191,14 +191,25 @@ magick identify <出力先>\offset-frames.gif
 
 形式・寸法・メタデータのいずれも変えない指定なら、膨らむ再圧縮結果ではなく元ファイルをコピーします。
 
+**使うファイルに注意**してください。`flat-320x200.png` / `gradient-256x256.png` は
+**JPEG 変換で増える**ように作った画像で、PNG → PNG の再エンコードではむしろ縮みます。
+オリジナル維持の確認には、同一形式の再エンコードで増える次の 2 つを使います。
+
+| ファイル | 増える理由 |
+| --- | --- |
+| `indexed-320x200.png` | 8 色のパレット PNG。本アプリは RGBA8 で書き出すため必ず膨らむ |
+| `lowquality-640x480.jpg` | 品質 30 の JPEG。既定の品質 82 で再エンコードすると膨らむ |
+
 1. 出力形式 **オリジナル維持**、リサイズ **変更なし**、メタデータ **保持する**
-2. `samples/size-increase/` の 2 ファイルを追加して実行
+2. 上記 2 ファイルを追加して実行
 
 - SAVED が `0 B / 0.0%` になること（増加しないこと）
 - 状態列に `再圧縮すると大きくなるため元ファイルをコピー` が出ること
 - 出力ファイルが入力とバイト単位で一致すること
 
 続けてメタデータを **削除する** に変えて再実行し、**コピーされず再圧縮結果（増加）になる**ことを確認します。メタデータ削除は再エンコードでしか実現できないため、コピーで代替してはいけません。同様に、出力形式を JPEG にした場合もコピーされません。
+
+この分岐は `repo_samples_fall_back_to_copy_on_size_increase` でも自動検証しています。
 
 ---
 
@@ -300,9 +311,13 @@ magick -delay 20 -loop 0 \
   \( -size 200x120 xc:'#102030' -fill '#ff9f0a' -draw "rectangle 145,35 195,85" \) \
   -layers OptimizeFrame samples/animated/offset-frames.gif
 
-# サイズ増加の確認用
+# サイズ増加の確認用 (形式変換で増える)
 magick -size 320x200 xc:'#101820' -fill '#ffd60a' -draw "rectangle 40,40 280,160" -depth 8 -define png:color-type=2 samples/size-increase/flat-320x200.png
 magick -size 256x256 gradient:'#0a84ff-#30d158' -depth 8 -define png:color-type=2 samples/size-increase/gradient-256x256.png
+
+# コピーフォールバックの確認用 (同一形式の再エンコードで増える)
+magick -size 320x200 xc:'#101820' -fill '#ffd60a' -draw "rectangle 40,40 280,160" -fill '#0a84ff' -draw "circle 160,100 160,60" -colors 8 PNG8:samples/size-increase/indexed-320x200.png
+magick -size 640x480 gradient:'#ff375f-#5ac8fa' -quality 30 samples/size-increase/lowquality-640x480.jpg
 
 # デコード上限の確認用 (192 メガピクセル)
 magick -size 24000x8000 gradient:'#ff375f-#5ac8fa' -depth 8 -define png:color-type=2 samples/decode-limit/huge-24000x8000.png
