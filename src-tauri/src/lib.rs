@@ -2,7 +2,7 @@ use std::{
     any::Any,
     collections::HashSet,
     fs::{self, File},
-    io::BufWriter,
+    io::Cursor,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::{
@@ -15,14 +15,17 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use dirs_next::desktop_dir;
 use filetime::{set_file_mtime, FileTime};
-use gif::{ColorOutput, DecodeOptions, Encoder as GifEncoder, Frame as GifFrame, Repeat};
+use gif::{
+    ColorOutput, DecodeOptions, DisposalMethod, Encoder as GifEncoder, Frame as GifFrame, Repeat,
+};
 use image::{
     codecs::{
         avif::AvifEncoder,
         jpeg::JpegEncoder,
         png::{CompressionType, FilterType, PngEncoder},
     },
-    DynamicImage, GenericImageView, ImageEncoder, ImageFormat, RgbaImage,
+    DynamicImage, GenericImageView, ImageEncoder, ImageFormat, ImageReader, Limits, Rgba,
+    RgbaImage,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Window};
@@ -158,6 +161,13 @@ struct BatchSettings {
     quality: QualitySettings,
     metadata_mode: MetadataMode,
     timestamps: TimestampSettings,
+    /// デコード時に確保を許すメモリ量 (MB)。古い設定ファイルには存在しないため既定値を持たせる。
+    #[serde(default = "default_decode_limit_mb")]
+    decode_limit_mb: u32,
+}
+
+fn default_decode_limit_mb() -> u32 {
+    DECODE_LIMIT_DEFAULT_MB
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,7 +186,9 @@ struct ProcessResultItem {
     output_format: Option<String>,
     original_size: u64,
     optimized_size: Option<u64>,
-    saved_size: Option<u64>,
+    /// 削減バイト数。出力の方が大きくなった場合は負の値になる。
+    saved_size: Option<i64>,
+    /// 削減率 (%)。出力の方が大きくなった場合は負の値になる。
     saved_percent: Option<f64>,
     width: Option<u32>,
     height: Option<u32>,
@@ -214,11 +226,15 @@ struct BatchControl {
 }
 
 #[tauri::command]
-async fn inspect_inputs(paths: Vec<String>) -> Result<InspectResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || inspect_inputs_impl(paths))
+async fn inspect_inputs(
+    paths: Vec<String>,
+    decode_limit_mb: Option<u32>,
+) -> Result<InspectResponse, String> {
+    let decode_limit_mb = decode_limit_mb.unwrap_or(DECODE_LIMIT_DEFAULT_MB);
+    tauri::async_runtime::spawn_blocking(move || inspect_inputs_impl(paths, decode_limit_mb))
         .await
         .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -234,7 +250,7 @@ async fn process_batch(
     tauri::async_runtime::spawn_blocking(move || process_batch_impl(window, request, control))
         .await
         .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -260,7 +276,7 @@ fn get_default_output_dir() -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
+fn inspect_inputs_impl(paths: Vec<String>, decode_limit_mb: u32) -> Result<InspectResponse> {
     let mut entries = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = HashSet::new();
@@ -286,7 +302,7 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                     .unwrap_or(path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                match inspect_single_safe(path, &root, &relative) {
+                match inspect_single_safe(path, &root, &relative, decode_limit_mb) {
                     Ok(entry) => {
                         if seen.insert(entry.source_path.clone()) {
                             entries.push(entry);
@@ -294,7 +310,7 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                     }
                     Err(error) => skipped.push(SkippedItem {
                         path: path.to_string_lossy().to_string(),
-                        reason: error.to_string(),
+                        reason: format!("{error:#}"),
                     }),
                 }
             }
@@ -303,7 +319,7 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| root.to_string_lossy().to_string());
-            match inspect_single_safe(&root, &root, &relative) {
+            match inspect_single_safe(&root, &root, &relative, decode_limit_mb) {
                 Ok(entry) => {
                     if seen.insert(entry.source_path.clone()) {
                         entries.push(entry);
@@ -311,7 +327,7 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
                 }
                 Err(error) => skipped.push(SkippedItem {
                     path: raw_path,
-                    reason: error.to_string(),
+                    reason: format!("{error:#}"),
                 }),
             }
         }
@@ -321,11 +337,21 @@ fn inspect_inputs_impl(paths: Vec<String>) -> Result<InspectResponse> {
     Ok(InspectResponse { entries, skipped })
 }
 
-fn inspect_single_safe(path: &Path, root: &Path, relative: &str) -> Result<InputEntry> {
-    catch_task_panic("inspection", || inspect_single(path, root, relative))
+fn inspect_single_safe(
+    path: &Path,
+    root: &Path,
+    relative: &str,
+    decode_limit_mb: u32,
+) -> Result<InputEntry> {
+    catch_task_panic("inspection", || inspect_single(path, root, relative, decode_limit_mb))
 }
 
-fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry> {
+fn inspect_single(
+    path: &Path,
+    root: &Path,
+    relative: &str,
+    decode_limit_mb: u32,
+) -> Result<InputEntry> {
     let format = detect_input_format(path).ok_or_else(|| anyhow!("unsupported format"))?;
     let metadata = fs::metadata(path).with_context(|| format!("failed to read metadata: {}", path.display()))?;
     let file_size = metadata.len();
@@ -359,6 +385,20 @@ fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry
         }
     };
 
+    // 寸法が大きい画像は、形式やエンコーダの制限とは別に、デコード段階の
+    // メモリ上限で弾かれる。処理前に気づけるよう入力一覧へ出しておく。
+    if let (Some(width), Some(height)) = (width, height) {
+        let estimated = estimated_decode_bytes(width, height, &format);
+        let limit = decode_limit_bytes(decode_limit_mb);
+        if estimated > limit {
+            warnings.push(format!(
+                "デコードに約 {} 必要 (上限 {})",
+                format_bytes_short(estimated),
+                format_bytes_short(limit)
+            ));
+        }
+    }
+
     Ok(InputEntry {
         id: path.to_string_lossy().to_string(),
         source_path: path.to_string_lossy().to_string(),
@@ -374,6 +414,44 @@ fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry
         runtime_supported,
         warnings,
     })
+}
+
+/// デコード時に確保を許すメモリ量の既定値 (MB)。
+/// `image` クレートの `Limits::default().max_alloc` と同じ値。
+const DECODE_LIMIT_DEFAULT_MB: u32 = 512;
+/// 下げすぎて通常の画像すら通らなくなるのを防ぐための下限 (MB)。
+const DECODE_LIMIT_MIN_MB: u32 = 64;
+/// 上限 (MB)。これ以上は確保に失敗してプロセスごと落ちる可能性が高い。
+const DECODE_LIMIT_MAX_MB: u32 = 8192;
+
+/// UI から渡された MB 値を、実際に使うバイト数へ変換する。
+fn decode_limit_bytes(decode_limit_mb: u32) -> u64 {
+    u64::from(decode_limit_mb.clamp(DECODE_LIMIT_MIN_MB, DECODE_LIMIT_MAX_MB)) * 1024 * 1024
+}
+
+/// デコード後に必要となるピクセルバッファのおおよそのバイト数。
+/// 実際の色形式はデコードするまで確定しないため、形式ごとの代表値で見積もる。
+fn estimated_decode_bytes(width: u32, height: u32, format: &InputFormat) -> u64 {
+    let bytes_per_pixel = match format {
+        InputFormat::Jpeg => 3,
+        _ => 4,
+    };
+    u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(bytes_per_pixel)
+}
+
+/// タグ表示に載せる短い容量表記。
+fn format_bytes_short(bytes: u64) -> String {
+    const UNIT: f64 = 1024.0;
+    let value = bytes as f64;
+    if value >= UNIT * UNIT * UNIT {
+        format!("{:.1} GB", value / (UNIT * UNIT * UNIT))
+    } else if value >= UNIT * UNIT {
+        format!("{:.0} MB", value / (UNIT * UNIT))
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 fn catch_task_panic<T, F>(label: &str, task: F) -> Result<T>
@@ -431,7 +509,9 @@ fn process_batch_impl(window: Window, request: ProcessRequest, control: BatchCon
                 saved_percent: None,
                 width: entry.width,
                 height: entry.height,
-                reason: Some(error.to_string()),
+                // `{:#}` にしないと anyhow の最外殻 context しか出ず、
+                // 本当の原因 (例: Memory limit exceeded) が失われる。
+                reason: Some(format!("{error:#}")),
                 warnings: Vec::new(),
             });
         results.push(result);
@@ -525,13 +605,15 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
         }
         process_animated_gif(entry, settings, &output_path)?;
     } else {
-        process_static_image(entry, settings, output_format, &output_path)?;
+        process_static_image(entry, settings, output_format, &output_path, &mut warnings)?;
     }
 
     apply_timestamps(entry, settings, &output_path)?;
 
     let optimized_size = fs::metadata(&output_path)?.len();
-    let saved_size = entry.file_size.saturating_sub(optimized_size);
+    // 出力の方が大きくなる場合があるため、削減量は符号付きで扱う。
+    // 0 に丸めると「膨らんだのに削減 0 B」と表示されてしまう。
+    let saved_size = entry.file_size as i64 - optimized_size as i64;
     let saved_percent = if entry.file_size == 0 {
         0.0
     } else {
@@ -556,30 +638,99 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
     })
 }
 
+/// libwebp の `WEBP_MAX_DIMENSION`。超えると `VP8_ENC_ERROR_BAD_DIMENSION` でパニックする。
+const WEBP_MAX_DIMENSION: u32 = 16_383;
+/// rav1e が受け付ける寸法の上限 (`rav1e/src/api/config/mod.rs`)。
+const AVIF_MAX_DIMENSION: u32 = 65_535;
+/// libavif 系デコーダ (Chrome / Firefox / Windows / IrfanView 等) の既定上限。
+/// これを超えた AVIF は生成できるが、多くのビューアで開けない。
+const AVIF_VIEWER_MAX_DIMENSION: u32 = 32_768;
+/// GIF はヘッダの寸法フィールドが 16bit のため 65535 px までしか表現できない。
+const GIF_MAX_DIMENSION: u32 = 65_535;
+/// libjpeg の `JPEG_MAX_DIMENSION`。JPEG 規格の SOF フィールドは u16 (65535) だが、
+/// libjpeg はオーバーフロー防止のため 65500 で切っている。ほぼ全ての JPEG 読み込み実装が
+/// libjpeg 系のため、65501 以上を書くとどこでも開けないファイルになる。
+const JPEG_MAX_DIMENSION: u32 = 65_500;
+
+/// エンコーダごとの寸法制限を、実際にエンコードする前に判定する。
+///
+/// 上限超過はエンコーダ側でパニックしたり無警告で壊れた出力になったりするため、
+/// ここで理由の分かるエラーへ変換する。
+fn check_encoder_dimensions(
+    width: u32,
+    height: u32,
+    output_format: OutputFormat,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let hard_limit = match output_format {
+        OutputFormat::Webp => Some(("WebP", WEBP_MAX_DIMENSION)),
+        OutputFormat::Avif => Some(("AVIF", AVIF_MAX_DIMENSION)),
+        OutputFormat::Gif => Some(("GIF", GIF_MAX_DIMENSION)),
+        OutputFormat::Original | OutputFormat::Jpeg => Some(("JPEG", JPEG_MAX_DIMENSION)),
+        OutputFormat::Png => None,
+    };
+
+    if let Some((label, limit)) = hard_limit {
+        if width > limit || height > limit {
+            return Err(anyhow!(
+                "{label} は幅・高さとも {limit} px までです（出力予定 {width} x {height}）。リサイズしてから出力してください。"
+            ));
+        }
+    }
+
+    if matches!(output_format, OutputFormat::Avif)
+        && (width > AVIF_VIEWER_MAX_DIMENSION || height > AVIF_VIEWER_MAX_DIMENSION)
+    {
+        // タグとして表示されるため短く保つ。長文にすると 状態 列が横に伸びる。
+        warnings.push(format!("主要ビューア上限 {AVIF_VIEWER_MAX_DIMENSION} px 超"));
+    }
+
+    Ok(())
+}
+
 fn process_static_image(
     entry: &InputEntry,
     settings: &BatchSettings,
     output_format: OutputFormat,
     output_path: &Path,
+    warnings: &mut Vec<String>,
 ) -> Result<()> {
-    let image = decode_input_image(entry)?;
+    let image = decode_input_image(entry, settings.decode_limit_mb)?;
     let resized = resize_dynamic_image(image, &settings.resize);
+    let (width, height) = resized.dimensions();
+    check_encoder_dimensions(width, height, output_format, warnings)?;
+
+    let encoded = encode_static_image(&resized, settings, output_format)?;
+    fs::write(output_path, encoded)
+        .with_context(|| format!("failed to write output: {}", output_path.display()))?;
+
+    Ok(())
+}
+
+/// エンコード結果をいったんメモリ上に組み立てて返す。
+///
+/// 出力ファイルはエンコードが成功してから作成する。先にファイルを作ると、
+/// エンコード失敗時に 0 byte のファイルが残ってしまうため。
+fn encode_static_image(
+    source: &DynamicImage,
+    settings: &BatchSettings,
+    output_format: OutputFormat,
+) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
 
     match output_format {
         OutputFormat::Original | OutputFormat::Jpeg => {
-            let mut writer = BufWriter::new(File::create(output_path)?);
             let mut encoder =
-                JpegEncoder::new_with_quality(&mut writer, settings.quality.jpeg_quality.clamp(1, 100));
-            encoder.encode_image(&resized)?;
+                JpegEncoder::new_with_quality(&mut buffer, settings.quality.jpeg_quality.clamp(1, 100));
+            encoder.encode_image(source)?;
         }
         OutputFormat::Png => {
-            let mut writer = BufWriter::new(File::create(output_path)?);
             let encoder = PngEncoder::new_with_quality(
-                &mut writer,
+                &mut buffer,
                 png_compression(settings.quality.png_compression),
                 FilterType::Adaptive,
             );
-            let rgba = resized.to_rgba8();
+            let rgba = source.to_rgba8();
             encoder.write_image(
                 rgba.as_raw(),
                 rgba.width(),
@@ -588,16 +739,15 @@ fn process_static_image(
             )?;
         }
         OutputFormat::Webp => {
-            let rgba = resized.to_rgba8();
+            let rgba = source.to_rgba8();
             let encoded = WebpEncoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
                 .encode(settings.quality.webp_quality.clamp(1.0, 100.0));
-            fs::write(output_path, encoded.to_vec())?;
+            buffer.extend_from_slice(&encoded);
         }
         OutputFormat::Avif => {
-            let mut writer = BufWriter::new(File::create(output_path)?);
-            let rgba = resized.to_rgba8();
+            let rgba = source.to_rgba8();
             let encoder = AvifEncoder::new_with_speed_quality(
-                &mut writer,
+                &mut buffer,
                 6,
                 settings.quality.avif_quality.clamp(1, 100),
             );
@@ -609,12 +759,12 @@ fn process_static_image(
             )?;
         }
         OutputFormat::Gif => {
-            let rgba = resized.to_rgba8();
-            encode_static_gif(&rgba, output_path)?;
+            let rgba = source.to_rgba8();
+            encode_static_gif(&rgba, &mut buffer)?;
         }
     }
 
-    Ok(())
+    Ok(buffer)
 }
 
 fn process_heif_original_copy(
@@ -634,7 +784,13 @@ fn process_heif_original_copy(
     }
 
     warnings.push("HEIC / HEIF のオリジナル維持出力は再圧縮せずコピーします。".to_string());
-    fs::copy(&entry.source_path, output_path)?;
+    // コピーが途中で失敗した場合、中途半端な出力ファイルを残さない。
+    if let Err(error) = fs::copy(&entry.source_path, output_path) {
+        let _ = fs::remove_file(output_path);
+        return Err(error).with_context(|| {
+            format!("failed to copy source to output: {}", output_path.display())
+        });
+    }
     Ok(())
 }
 
@@ -644,37 +800,129 @@ fn process_animated_gif(entry: &InputEntry, settings: &BatchSettings, output_pat
     decoder.set_color_output(ColorOutput::RGBA);
     let mut reader = decoder.read_info(file)?;
 
-    let output = File::create(output_path)?;
-    let mut writer = BufWriter::new(output);
-    let mut encoder = GifEncoder::new(&mut writer, reader.width(), reader.height(), &[])?;
-    encoder.set_repeat(Repeat::Infinite)?;
+    // GIF のフレームはキャンバス全体ではなく部分矩形 (left / top / width / height) で
+    // 格納されうる。フレーム単体をリサイズすると位置もサイズもずれるため、
+    // 一度キャンバスへ合成してから、キャンバスごとリサイズする。
+    let canvas_width = u32::from(reader.width());
+    let canvas_height = u32::from(reader.height());
+    let (target_width, target_height) =
+        resize_target_dimensions(canvas_width, canvas_height, &settings.resize);
+    let mut canvas = RgbaImage::new(canvas_width, canvas_height);
 
-    while let Some(frame) = reader.read_next_frame()? {
-        let rgba = RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.buffer.to_vec())
-            .ok_or_else(|| anyhow!("failed to build GIF frame"))?;
-        let resized = resize_dynamic_image(DynamicImage::ImageRgba8(rgba), &settings.resize).to_rgba8();
-        let frame_width = resized.width() as u16;
-        let frame_height = resized.height() as u16;
-        let mut raw = resized.into_raw();
-        let mut out_frame = GifFrame::from_rgba_speed(
-            frame_width,
-            frame_height,
-            raw.as_mut_slice(),
-            gif_speed_from_colors(settings.quality.gif_colors),
-        );
-        out_frame.delay = frame.delay;
-        out_frame.dispose = frame.dispose;
-        out_frame.transparent = frame.transparent;
-        encoder.write_frame(&out_frame)?;
+    // 出力ファイルはエンコードが成功してから作成する (0 byte ファイルを残さないため)。
+    let mut buffer = Vec::new();
+    {
+        let mut encoder =
+            GifEncoder::new(&mut buffer, target_width as u16, target_height as u16, &[])?;
+        encoder.set_repeat(Repeat::Infinite)?;
+
+        while let Some(frame) = reader.read_next_frame()? {
+            // Previous 指定のフレームは、描画前の状態を後で復元する必要がある。
+            let restore_point = match frame.dispose {
+                DisposalMethod::Previous => Some(canvas.clone()),
+                _ => None,
+            };
+
+            compose_gif_frame(&mut canvas, frame);
+
+            let composed = if target_width == canvas_width && target_height == canvas_height {
+                canvas.clone()
+            } else {
+                image::imageops::resize(
+                    &canvas,
+                    target_width,
+                    target_height,
+                    image::imageops::FilterType::Lanczos3,
+                )
+            };
+
+            let mut raw = composed.into_raw();
+            let mut out_frame = GifFrame::from_rgba_speed(
+                target_width as u16,
+                target_height as u16,
+                raw.as_mut_slice(),
+                gif_speed_from_colors(settings.quality.gif_colors),
+            );
+            out_frame.delay = frame.delay;
+            // 各フレームを合成済みの完成画として書き出すため、次フレームの前に
+            // キャンバスを消す。元フレームの dispose / transparent は、パレットも
+            // 部分矩形も変わっているのでそのまま引き継いではいけない。
+            out_frame.dispose = DisposalMethod::Background;
+            encoder.write_frame(&out_frame)?;
+
+            // 元 GIF の廃棄方法を、次フレームの合成用キャンバスへ反映する。
+            match frame.dispose {
+                DisposalMethod::Background => clear_gif_frame_rect(&mut canvas, frame),
+                DisposalMethod::Previous => {
+                    if let Some(restore_point) = restore_point {
+                        canvas = restore_point;
+                    }
+                }
+                DisposalMethod::Any | DisposalMethod::Keep => {}
+            }
+        }
     }
+
+    fs::write(output_path, buffer)
+        .with_context(|| format!("failed to write output: {}", output_path.display()))?;
 
     Ok(())
 }
 
-fn encode_static_gif(image: &RgbaImage, output_path: &Path) -> Result<()> {
-    let output = File::create(output_path)?;
-    let mut writer = BufWriter::new(output);
-    let mut encoder = GifEncoder::new(&mut writer, image.width() as u16, image.height() as u16, &[])?;
+/// 部分矩形フレームを left / top の位置へ合成する。
+/// 透明ピクセルは下のフレームを残す (GIF の透過はアルファ合成ではなく素通し)。
+fn compose_gif_frame(canvas: &mut RgbaImage, frame: &GifFrame) {
+    let left = u32::from(frame.left);
+    let top = u32::from(frame.top);
+    let width = u32::from(frame.width);
+    let height = u32::from(frame.height);
+
+    for y in 0..height {
+        let canvas_y = top + y;
+        if canvas_y >= canvas.height() {
+            break;
+        }
+        for x in 0..width {
+            let canvas_x = left + x;
+            if canvas_x >= canvas.width() {
+                continue;
+            }
+            let offset = ((y * width + x) * 4) as usize;
+            let Some(pixel) = frame.buffer.get(offset..offset + 4) else {
+                continue;
+            };
+            if pixel[3] == 0 {
+                continue;
+            }
+            canvas.put_pixel(canvas_x, canvas_y, Rgba([pixel[0], pixel[1], pixel[2], pixel[3]]));
+        }
+    }
+}
+
+/// DisposalMethod::Background 用に、そのフレームの矩形だけを透明へ戻す。
+fn clear_gif_frame_rect(canvas: &mut RgbaImage, frame: &GifFrame) {
+    let left = u32::from(frame.left);
+    let top = u32::from(frame.top);
+    let width = u32::from(frame.width);
+    let height = u32::from(frame.height);
+
+    for y in 0..height {
+        let canvas_y = top + y;
+        if canvas_y >= canvas.height() {
+            break;
+        }
+        for x in 0..width {
+            let canvas_x = left + x;
+            if canvas_x >= canvas.width() {
+                continue;
+            }
+            canvas.put_pixel(canvas_x, canvas_y, Rgba([0, 0, 0, 0]));
+        }
+    }
+}
+
+fn encode_static_gif(image: &RgbaImage, out: &mut Vec<u8>) -> Result<()> {
+    let mut encoder = GifEncoder::new(out, image.width() as u16, image.height() as u16, &[])?;
     encoder.set_repeat(Repeat::Infinite)?;
     let mut raw = image.clone().into_raw();
     let frame = GifFrame::from_rgba_speed(
@@ -687,14 +935,19 @@ fn encode_static_gif(image: &RgbaImage, output_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn decode_input_image(entry: &InputEntry) -> Result<DynamicImage> {
+fn decode_input_image(entry: &InputEntry, decode_limit_mb: u32) -> Result<DynamicImage> {
     match entry.format {
+        // HEIC / HEIF は heif-oxide 側でデコードするため、この上限は適用されない。
         InputFormat::Heic | InputFormat::Heif => decode_heif_image(Path::new(&entry.source_path)),
         InputFormat::Avif => Err(anyhow!("このビルドでは AVIF 入力の読込を一時停止しています。")),
         _ => {
             let bytes = fs::read(&entry.source_path)?;
-            image::load_from_memory_with_format(&bytes, image_format_from_input(&entry.format)?)
-                .context("failed to decode image")
+            let mut reader =
+                ImageReader::with_format(Cursor::new(bytes), image_format_from_input(&entry.format)?);
+            let mut limits = Limits::default();
+            limits.max_alloc = Some(decode_limit_bytes(decode_limit_mb));
+            reader.limits(limits);
+            reader.decode().context("failed to decode image")
         }
     }
 }
@@ -787,15 +1040,27 @@ fn build_output_path(
 }
 
 fn resize_dynamic_image(image: DynamicImage, settings: &ResizeSettings) -> DynamicImage {
-    let Some(value) = settings.value else {
-        return image;
-    };
     let (width, height) = image.dimensions();
+    let (target_width, target_height) = resize_target_dimensions(width, height, settings);
+    if target_width == width && target_height == height {
+        return image;
+    }
+    image.resize(target_width, target_height, image::imageops::FilterType::Lanczos3)
+}
+
+/// リサイズ後の寸法だけを求める。
+///
+/// アニメーション GIF では、フレームを描き込む前にキャンバスの出力寸法を確定させる
+/// 必要があるため、実際のリサイズ処理と分離している。
+fn resize_target_dimensions(width: u32, height: u32, settings: &ResizeSettings) -> (u32, u32) {
+    let Some(value) = settings.value else {
+        return (width, height);
+    };
     let scaled_value = match settings.unit {
         ResizeUnit::Px => value,
         ResizeUnit::Percent => {
             let basis = match settings.mode {
-                ResizeMode::None => return image,
+                ResizeMode::None => return (width, height),
                 ResizeMode::Width => width,
                 ResizeMode::Height => height,
                 ResizeMode::LongEdge => width.max(height),
@@ -804,7 +1069,7 @@ fn resize_dynamic_image(image: DynamicImage, settings: &ResizeSettings) -> Dynam
         }
     };
     let (target_width, target_height) = match settings.mode {
-        ResizeMode::None => return image,
+        ResizeMode::None => return (width, height),
         ResizeMode::Width => {
             let new_width = scaled_value.min(width).max(1);
             let new_height = ((height as f64 * (new_width as f64 / width as f64)).round() as u32).max(1);
@@ -829,11 +1094,12 @@ fn resize_dynamic_image(image: DynamicImage, settings: &ResizeSettings) -> Dynam
         }
     };
 
+    // 拡大はしない。
     if target_width >= width && target_height >= height {
-        return image;
+        return (width, height);
     }
 
-    image.resize(target_width, target_height, image::imageops::FilterType::Lanczos3)
+    (target_width, target_height)
 }
 
 fn inspect_gif(path: &Path) -> Result<(usize, u32, u32)> {
@@ -1051,7 +1317,7 @@ mod tests {
         let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(10, 8, Rgba([255, 0, 0, 255]));
         image.save(&path).unwrap();
 
-        let response = inspect_inputs_impl(vec![path.to_string_lossy().to_string()]).unwrap();
+        let response = inspect_inputs_impl(vec![path.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].width, Some(10));
         assert_eq!(response.entries[0].height, Some(8));
@@ -1064,7 +1330,7 @@ mod tests {
         let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(40, 30, Rgba([0, 120, 255, 255]));
         image.save(&input).unwrap();
 
-        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()]).unwrap();
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
         let entry = inspect.entries[0].clone();
         let settings = BatchSettings {
             output_format: OutputFormat::Jpeg,
@@ -1088,6 +1354,7 @@ mod tests {
                 preserve_creation_time: false,
                 preserve_last_write_time: false,
             },
+            decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
         };
         let output_root = resolve_output_root(&settings).unwrap();
         fs::create_dir_all(&output_root).unwrap();
@@ -1136,6 +1403,7 @@ mod tests {
                 preserve_creation_time: false,
                 preserve_last_write_time: false,
             },
+            decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
         };
         let output_root = resolve_output_root(&settings).unwrap();
         let error = process_one(&entry, &settings, &output_root).unwrap_err();
@@ -1157,5 +1425,237 @@ mod tests {
         );
 
         assert_eq!(resized.dimensions(), (200, 100));
+    }
+
+    #[test]
+    fn webp_dimension_limit_is_enforced() {
+        let mut warnings = Vec::new();
+        assert!(check_encoder_dimensions(16383, 64, OutputFormat::Webp, &mut warnings).is_ok());
+        assert!(check_encoder_dimensions(64, 16383, OutputFormat::Webp, &mut warnings).is_ok());
+
+        let error = check_encoder_dimensions(16384, 64, OutputFormat::Webp, &mut warnings).unwrap_err();
+        assert!(error.to_string().contains("16383"));
+        assert!(check_encoder_dimensions(64, 16384, OutputFormat::Webp, &mut warnings).is_err());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn avif_over_viewer_limit_warns_but_succeeds() {
+        let mut warnings = Vec::new();
+        assert!(check_encoder_dimensions(32768, 64, OutputFormat::Avif, &mut warnings).is_ok());
+        assert!(warnings.is_empty());
+
+        assert!(check_encoder_dimensions(32769, 64, OutputFormat::Avif, &mut warnings).is_ok());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("32768"));
+
+        assert!(check_encoder_dimensions(65536, 64, OutputFormat::Avif, &mut warnings).is_err());
+    }
+
+    #[test]
+    fn gif_dimension_limit_is_enforced() {
+        let mut warnings = Vec::new();
+        assert!(check_encoder_dimensions(65535, 1, OutputFormat::Gif, &mut warnings).is_ok());
+        assert!(check_encoder_dimensions(65536, 1, OutputFormat::Gif, &mut warnings).is_err());
+    }
+
+    #[test]
+    fn jpeg_dimension_limit_follows_libjpeg() {
+        // 規格上は 65535 まで書けるが、libjpeg 系デコーダは 65500 までしか読めない。
+        let mut warnings = Vec::new();
+        assert!(check_encoder_dimensions(65500, 64, OutputFormat::Jpeg, &mut warnings).is_ok());
+
+        let error = check_encoder_dimensions(65501, 64, OutputFormat::Jpeg, &mut warnings).unwrap_err();
+        assert!(error.to_string().contains("65500"));
+        assert!(check_encoder_dimensions(64, 65501, OutputFormat::Jpeg, &mut warnings).is_err());
+    }
+
+    /// 40x20 のキャンバスに、2 コマ目だけ部分矩形 (10,5 から 8x6) を持つ GIF を作る。
+    fn write_animated_gif(path: &Path) {
+        let mut file = File::create(path).unwrap();
+        let mut encoder = GifEncoder::new(&mut file, 40, 20, &[]).unwrap();
+        encoder.set_repeat(Repeat::Infinite).unwrap();
+
+        let mut full = vec![0u8; 40 * 20 * 4];
+        for pixel in full.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[20, 140, 255, 255]);
+        }
+        let mut first = GifFrame::from_rgba_speed(40, 20, &mut full, 10);
+        first.delay = 10;
+        encoder.write_frame(&first).unwrap();
+
+        let mut patch = vec![0u8; 8 * 6 * 4];
+        for pixel in patch.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[255, 80, 0, 255]);
+        }
+        let mut second = GifFrame::from_rgba_speed(8, 6, &mut patch, 10);
+        second.left = 10;
+        second.top = 5;
+        second.delay = 10;
+        encoder.write_frame(&second).unwrap();
+    }
+
+    #[test]
+    fn animated_gif_resize_keeps_canvas_and_frames_in_sync() {
+        let dir = temp_dir("anim-resize");
+        let input = dir.join("anim.gif");
+        write_animated_gif(&input);
+
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let entry = inspect.entries[0].clone();
+        assert!(entry.animated);
+
+        let settings = BatchSettings {
+            output_format: OutputFormat::Gif,
+            output_mode: OutputMode::Custom,
+            custom_output_dir: Some(dir.join("output").to_string_lossy().to_string()),
+            overwrite: false,
+            resize: ResizeSettings {
+                mode: ResizeMode::LongEdge,
+                value: Some(50),
+                unit: ResizeUnit::Percent,
+            },
+            quality: QualitySettings {
+                jpeg_quality: 80,
+                webp_quality: 80.0,
+                avif_quality: 50,
+                png_compression: 6,
+                gif_colors: 128,
+            },
+            metadata_mode: MetadataMode::Strip,
+            timestamps: TimestampSettings {
+                preserve_creation_time: false,
+                preserve_last_write_time: false,
+            },
+            decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
+        };
+        let output_root = resolve_output_root(&settings).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+
+        let result = process_one(&entry, &settings, &output_root).unwrap();
+        assert!(result.success);
+
+        // 論理スクリーンサイズがリサイズ後の寸法になっていること。
+        // (以前はここが元サイズ 40x20 のまま、フレームだけ 20x10 になっていた)
+        let output_path = PathBuf::from(result.output_path.unwrap());
+        let (frames, canvas_width, canvas_height) = inspect_gif(&output_path).unwrap();
+        assert_eq!((canvas_width, canvas_height), (20, 10));
+        assert_eq!(frames, 2);
+
+        // 各フレームもキャンバスと同じ寸法で書かれていること。
+        let file = File::open(&output_path).unwrap();
+        let mut options = DecodeOptions::new();
+        options.set_color_output(ColorOutput::RGBA);
+        let mut reader = options.read_info(file).unwrap();
+        while let Some(frame) = reader.read_next_frame().unwrap() {
+            assert_eq!((frame.width, frame.height), (20, 10));
+            assert_eq!((frame.left, frame.top), (0, 0));
+        }
+    }
+
+    #[test]
+    fn oversized_input_is_flagged_before_processing() {
+        // 29166 x 32768 の JPEG は約 2.7 GB 必要で、512 MB の上限を超える。
+        let default_limit = decode_limit_bytes(DECODE_LIMIT_DEFAULT_MB);
+        let huge = estimated_decode_bytes(29166, 32768, &InputFormat::Jpeg);
+        assert!(huge > default_limit);
+        assert_eq!(format_bytes_short(huge), "2.7 GB");
+
+        // 一般的な写真サイズは超えない (誤検知しないこと)。
+        assert!(estimated_decode_bytes(6000, 4000, &InputFormat::Jpeg) < default_limit);
+        assert_eq!(format_bytes_short(default_limit), "512 MB");
+
+        // 上限を上げれば警告の閾値も追随する。
+        assert!(huge < decode_limit_bytes(4096));
+        // 範囲外の指定はクランプされる。
+        assert_eq!(decode_limit_bytes(0), decode_limit_bytes(DECODE_LIMIT_MIN_MB));
+        assert_eq!(decode_limit_bytes(99_999), decode_limit_bytes(DECODE_LIMIT_MAX_MB));
+    }
+
+    #[test]
+    fn size_increase_is_reported_as_negative() {
+        let dir = temp_dir("size-increase");
+        let input = dir.join("tiny.png");
+        // 単色 8x8 の PNG は数十バイト。JPEG はヘッダだけで数百バイトになるため必ず増える。
+        let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(8, 8, Rgba([1, 2, 3, 255]));
+        image.save(&input).unwrap();
+
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let entry = inspect.entries[0].clone();
+        let settings = BatchSettings {
+            output_format: OutputFormat::Jpeg,
+            output_mode: OutputMode::Custom,
+            custom_output_dir: Some(dir.join("output").to_string_lossy().to_string()),
+            overwrite: false,
+            resize: ResizeSettings {
+                mode: ResizeMode::None,
+                value: None,
+                unit: ResizeUnit::Px,
+            },
+            quality: QualitySettings {
+                jpeg_quality: 80,
+                webp_quality: 80.0,
+                avif_quality: 50,
+                png_compression: 6,
+                gif_colors: 128,
+            },
+            metadata_mode: MetadataMode::Strip,
+            timestamps: TimestampSettings {
+                preserve_creation_time: false,
+                preserve_last_write_time: false,
+            },
+            decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
+        };
+        let output_root = resolve_output_root(&settings).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+
+        let result = process_one(&entry, &settings, &output_root).unwrap();
+        assert!(result.success);
+        assert!(result.optimized_size.unwrap() > result.original_size);
+        // 0 に丸めず、増加を負の値として報告する。
+        assert!(result.saved_size.unwrap() < 0);
+        assert!(result.saved_percent.unwrap() < 0.0);
+    }
+
+    #[test]
+    fn oversized_webp_leaves_no_output_file() {
+        let dir = temp_dir("webp-limit");
+        let input = dir.join("wide.png");
+        let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(16384, 8, Rgba([10, 20, 30, 255]));
+        image.save(&input).unwrap();
+
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()], DECODE_LIMIT_DEFAULT_MB).unwrap();
+        let entry = inspect.entries[0].clone();
+        let settings = BatchSettings {
+            output_format: OutputFormat::Webp,
+            output_mode: OutputMode::Custom,
+            custom_output_dir: Some(dir.join("output").to_string_lossy().to_string()),
+            overwrite: false,
+            resize: ResizeSettings {
+                mode: ResizeMode::None,
+                value: None,
+                unit: ResizeUnit::Px,
+            },
+            quality: QualitySettings {
+                jpeg_quality: 80,
+                webp_quality: 80.0,
+                avif_quality: 50,
+                png_compression: 6,
+                gif_colors: 128,
+            },
+            metadata_mode: MetadataMode::Strip,
+            timestamps: TimestampSettings {
+                preserve_creation_time: false,
+                preserve_last_write_time: false,
+            },
+            decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
+        };
+        let output_root = resolve_output_root(&settings).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+
+        let error = process_one(&entry, &settings, &output_root).unwrap_err();
+        assert!(error.to_string().contains("16383"));
+        // 失敗時に 0 byte ファイルを残さない。
+        assert!(!output_root.join("wide.webp").exists());
     }
 }

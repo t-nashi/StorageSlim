@@ -550,6 +550,68 @@ input:focus,
   white-space: nowrap;
 }
 
+/* チェックボックス行の右側に余白があるので、そこへデコード上限を並べる。
+   品質スライダーの 5 列グリッドを崩さずに済む。 */
+.setting-other-panel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 18px 28px;
+  flex-wrap: wrap;
+}
+
+.decode-limit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.decode-limit-label {
+  font-size: 0.78rem;
+  color: #c7d6de;
+  white-space: nowrap;
+}
+
+.decode-limit-input {
+  width: 74px;
+  padding: 0.28rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.decode-limit-unit {
+  font-size: 0.76rem;
+  color: #84a0ad;
+}
+
+.decode-limit-hint {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: #84a0ad;
+  min-width: 0;
+}
+
+.decode-limit-note {
+  color: #6f8794;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 幅が足りないときは補足を隠し、既定値と範囲だけ残す。 */
+@media (max-width: 1500px) {
+  .decode-limit-note {
+    display: none;
+  }
+}
+
 .checkbox input {
   width: auto;
 }
@@ -816,6 +878,11 @@ input:focus,
   color: #93f0d1;
   font-size: 0.78rem;
   white-space: nowrap;
+}
+
+/* 出力の方が大きくなった場合。削減ではないので配色を分ける。 */
+.size-increased {
+  color: #ffbf7a;
 }
 
 .summary-pill {

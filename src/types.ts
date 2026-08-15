@@ -74,7 +74,14 @@ export interface BatchSettings {
   quality: QualitySettings;
   metadataMode: MetadataMode;
   timestamps: TimestampSettings;
+  /** デコード時に確保を許すメモリ量 (MB)。DECODE_LIMIT_MIN/MAX_MB の範囲。 */
+  decodeLimitMb: number;
 }
+
+/** デコード上限 (MB) の既定値と範囲。src-tauri/src/lib.rs の定数と一致させること。 */
+export const DECODE_LIMIT_DEFAULT_MB = 512;
+export const DECODE_LIMIT_MIN_MB = 64;
+export const DECODE_LIMIT_MAX_MB = 8192;
 
 export interface ProcessResponse {
   results: ProcessResultItem[];
@@ -87,7 +94,9 @@ export interface ProcessResultItem {
   outputFormat: string | null;
   originalSize: number;
   optimizedSize: number | null;
+  /** 削減バイト数。出力の方が大きくなった場合は負の値になる。 */
   savedSize: number | null;
+  /** 削減率 (%)。出力の方が大きくなった場合は負の値になる。 */
   savedPercent: number | null;
   width: number | null;
   height: number | null;

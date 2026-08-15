@@ -15,6 +15,11 @@ import type {
   ResizeUnit,
   SkippedItem,
 } from "./types";
+import {
+  DECODE_LIMIT_DEFAULT_MB,
+  DECODE_LIMIT_MAX_MB,
+  DECODE_LIMIT_MIN_MB,
+} from "./types";
 
 type ChoiceOption<T extends string> = {
   value: T;
@@ -93,6 +98,7 @@ function createDefaultSettings(defaultOutputDir: string): BatchSettings {
       preserveCreationTime: false,
       preserveLastWriteTime: false,
     },
+    decodeLimitMb: DECODE_LIMIT_DEFAULT_MB,
   };
 }
 
@@ -184,6 +190,11 @@ function normalizeSettings(raw: unknown, defaultOutputDir: string): BatchSetting
       preserveCreationTime: Boolean(timestamps.preserveCreationTime),
       preserveLastWriteTime: Boolean(timestamps.preserveLastWriteTime),
     },
+    decodeLimitMb: clamp(
+      Math.round(Number(candidate.decodeLimitMb ?? fallback.decodeLimitMb)) || fallback.decodeLimitMb,
+      DECODE_LIMIT_MIN_MB,
+      DECODE_LIMIT_MAX_MB,
+    ),
   };
 }
 
@@ -226,6 +237,20 @@ function formatBytes(bytes: number | null): string {
     unitIndex += 1;
   }
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+/**
+ * 削減量の表示。savedSize が負のとき（出力の方が大きくなったとき）は
+ * `+102.6 KB / +766.0%` のように増加であることを明示する。
+ */
+function formatSavedDelta(savedSize: number | null, savedPercent: number | null): string {
+  if (savedSize == null || savedPercent == null) {
+    return "-";
+  }
+  if (savedSize < 0) {
+    return `+${formatBytes(-savedSize)} / +${Math.abs(savedPercent).toFixed(1)}%`;
+  }
+  return `${formatBytes(savedSize)} / ${savedPercent.toFixed(1)}%`;
 }
 
 function formatDimension(width: number | null, height: number | null): string {
@@ -695,7 +720,10 @@ function App() {
       return;
     }
     try {
-      const response = await invoke<InspectResponse>("inspect_inputs", { paths });
+      const response = await invoke<InspectResponse>("inspect_inputs", {
+        paths,
+        decodeLimitMb: settings?.decodeLimitMb ?? DECODE_LIMIT_DEFAULT_MB,
+      });
       setEntries((current) => mergeEntries(current, response.entries));
       setSkipped((current) => current.concat(response.skipped));
       setErrorMessage(null);
@@ -1166,6 +1194,43 @@ function App() {
                     <span>上書きを許可する</span>
                   </label>
                 </div>
+
+                <div className="decode-limit">
+                  <label className="decode-limit-label" htmlFor="decode-limit">
+                    デコード上限
+                  </label>
+                  <input
+                    id="decode-limit"
+                    className="decode-limit-input"
+                    type="number"
+                    inputMode="numeric"
+                    min={DECODE_LIMIT_MIN_MB}
+                    max={DECODE_LIMIT_MAX_MB}
+                    step={64}
+                    value={settings.decodeLimitMb}
+                    onChange={(event) => {
+                      const parsed = Number(event.currentTarget.value);
+                      if (!Number.isFinite(parsed)) {
+                        return;
+                      }
+                      updateSettings((current) => ({ ...current, decodeLimitMb: Math.round(parsed) }));
+                    }}
+                    onBlur={(event) => {
+                      const parsed = Number(event.currentTarget.value);
+                      const next = Number.isFinite(parsed)
+                        ? clamp(Math.round(parsed), DECODE_LIMIT_MIN_MB, DECODE_LIMIT_MAX_MB)
+                        : DECODE_LIMIT_DEFAULT_MB;
+                      updateSettings((current) => ({ ...current, decodeLimitMb: next }));
+                    }}
+                  />
+                  <span className="decode-limit-unit">MB</span>
+                  <small className="decode-limit-hint">
+                    既定 {DECODE_LIMIT_DEFAULT_MB} / 範囲 {DECODE_LIMIT_MIN_MB}-{DECODE_LIMIT_MAX_MB}
+                    <span className="decode-limit-note">
+                      大きな画像の読込に必要な量。上げすぎるとメモリ不足でアプリが終了する場合があります
+                    </span>
+                  </small>
+                </div>
               </div>
             ) : null}
           </div>
@@ -1379,9 +1444,11 @@ function App() {
                 <div className="title-inline">
                   <h3>結果</h3>
                   <span>{results.length} 件</span>
-                  <span className="saved-inline">
-                    Saved: {formatBytes(totalSaved)}
-                    {totalSavedPercent != null ? ` / ${totalSavedPercent >= 0 ? "-" : "+"}${Math.abs(totalSavedPercent).toFixed(1)}%` : ""}
+                  <span className={`saved-inline${totalSaved < 0 ? " size-increased" : ""}`}>
+                    {totalSaved < 0 ? `増加: ${formatBytes(-totalSaved)}` : `Saved: ${formatBytes(totalSaved)}`}
+                    {totalSavedPercent != null && totalSavedPercent !== 0
+                      ? ` / ${totalSavedPercent > 0 ? "-" : "+"}${Math.abs(totalSavedPercent).toFixed(1)}%`
+                      : ""}
                   </span>
                   {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
                 </div>
@@ -1437,10 +1504,8 @@ function App() {
                           </td>
                           <td>{formatBytes(result.originalSize)}</td>
                           <td>{formatBytes(result.optimizedSize)}</td>
-                          <td>
-                            {result.success && result.savedSize != null && result.savedPercent != null
-                              ? `${formatBytes(result.savedSize)} / ${result.savedPercent.toFixed(1)}%`
-                              : "-"}
+                          <td className={result.success && (result.savedSize ?? 0) < 0 ? "size-increased" : undefined}>
+                            {result.success ? formatSavedDelta(result.savedSize, result.savedPercent) : "-"}
                           </td>
                           <td>
                             <div className="tag-list">
