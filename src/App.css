@@ -169,11 +169,56 @@ input:focus,
   margin: 0;
   font-size: 1.88rem;
   line-height: 1.05;
+  letter-spacing: 0.005em;
 }
 
 .app-header {
   align-self: start;
-  padding-bottom: 22px;
+  /* 製品名を主、説明文を従にする。タイトルバーやインストーラの表記と揃える。 */
+  display: flex;
+  /* baseline にするとロゴ（置換要素）の下端が基準になり、版数が 23px 下へずれる。
+     ロゴのサイズ変更にも影響されないよう center で揃える。 */
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.app-identity {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* アイコンの下地色はパネル背景とほぼ同じなので、わずかな縁で面を立たせる。
+   高さは見出し＋説明文のブロックと揃えている。 */
+.app-logo {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 13px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 10px 24px rgba(0, 0, 0, 0.32);
+}
+
+.app-identity-text {
+  min-width: 0;
+}
+
+.app-tagline {
+  margin: 6px 0 0;
+  color: #8fb2c2;
+  font-size: 0.86rem;
+}
+
+/* 12px と小さいため、階層は保ちつつコントラストを 4.85:1 → 5.74:1 へ上げる。
+   説明文 (8.12:1) より下、背景より十分明るい位置に置く。 */
+.app-version {
+  color: #7a94a2;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .app-grid {

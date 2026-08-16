@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readDir } from "@tauri-apps/plugin-fs";
+import appIconUrl from "./assets/storageslim-icon.svg";
 import "./App.css";
 import type {
   BatchProgress,
@@ -678,6 +680,8 @@ function App() {
   const [inputLoading, setInputLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  // tauri.conf.json の version を表示する。不具合報告時にビルドを特定できるようにするため。
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const dropDepthRef = useRef(0);
 
@@ -839,6 +843,22 @@ function App() {
     }
     setSettings((current) => (current ? { ...current, outputFormat: "original" } : current));
   }, [allowedOutputs, settings]);
+
+  useEffect(() => {
+    let active = true;
+    getVersion()
+      .then((version) => {
+        if (active) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => {
+        // 取得できなくても表示を省くだけで、機能には影響しない。
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const totalSaved = useMemo(() => {
     return results.filter((result) => result.success).reduce((sum, result) => sum + (result.savedSize ?? 0), 0);
@@ -1107,7 +1127,7 @@ function App() {
     return (
       <main className="app-shell">
         <section className="panel loading-panel">
-          <p className="eyebrow">StorageSlim MVP</p>
+          <p className="eyebrow">StorageSlim</p>
           <h1>設定を読み込んでいます...</h1>
         </section>
       </main>
@@ -1134,10 +1154,15 @@ function App() {
       }`}
     >
       <section className="app-header panel">
-        <div>
-          <p className="eyebrow">StorageSlim MVP</p>
-          <h1>画像最適化ワークベンチ</h1>
+        <div className="app-identity">
+          {/* 見出しが製品名を読み上げるので、アイコンは装飾として alt を空にする */}
+          <img className="app-logo" src={appIconUrl} alt="" width={56} height={56} />
+          <div className="app-identity-text">
+            <h1>StorageSlim</h1>
+            <p className="app-tagline">画像最適化ワークベンチ</p>
+          </div>
         </div>
+        {appVersion ? <span className="app-version">v{appVersion}</span> : null}
       </section>
 
       <section className="app-grid">

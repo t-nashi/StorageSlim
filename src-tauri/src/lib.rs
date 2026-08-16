@@ -539,7 +539,7 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
 
     let mut warnings = Vec::new();
     if matches!(settings.metadata_mode, MetadataMode::Keep) {
-        warnings.push("メタデータ保持はこの MVP ビルドではベストエフォートです。".to_string());
+        warnings.push("メタデータ保持はベストエフォート".to_string());
     }
 
     if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) && output_format == OutputFormat::Original {
