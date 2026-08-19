@@ -88,6 +88,45 @@ AVIF の 32,768 px だけ「失敗」ではなく「警告付きの成功」に�
 - アニメーション GIF はフレームをキャンバスへ合成してからリサイズし、書き出す際は直前フレームとの差分矩形へ戻す。GIF のフレームは部分矩形で格納されうるため、フレーム単体をリサイズすると位置とサイズが破綻するため。
 - 再圧縮した結果が元より大きく、かつコピーで指示を満たせる場合は元ファイルをコピーする。形式変換・リサイズ・メタデータ削除のいずれかを指定している場合は、指示を優先して再圧縮結果を出力する。
 
+## 自分でビルドして使う
+
+StorageSlim は MIT ライセンスの OSS です。以下の手順でビルドすれば、配布されているものと同じアプリを無償で入手できます。
+
+必要なもの:
+
+- Node.js 20 以降 / npm
+- Rust / Cargo（rustup 経由での導入を推奨）
+- Windows: Visual Studio Build Tools の「C++ によるデスクトップ開発」ワークロード、および WebView2 ランタイム（Windows 11 には標準で入っている）
+- macOS: Xcode Command Line Tools
+
+手順（Windows は PowerShell、macOS は Terminal.app などのシェル）:
+
+```powershell
+git clone https://github.com/<owner>/StorageSlim.git
+cd StorageSlim
+npm install
+npm run tauri build
+```
+
+生成物:
+
+```text
+<repo>/src-tauri/target/release/storageslim.exe
+<repo>/src-tauri/target/release/bundle/msi/StorageSlim_<version>_x64_en-US.msi
+<repo>/src-tauri/target/release/bundle/nsis/StorageSlim_<version>_x64-setup.exe
+```
+
+### 注意: `cargo build` ではアプリになりません
+
+`src-tauri` で `cargo build` を実行すると exe 自体は生成されますが、フロントエンドのビルド成果物（`dist/`）が埋め込まれないため、起動しても画面が表示されません。
+
+ビルドは必ず Tauri CLI（`npm run tauri build`）を使ってください。Tauri CLI は `beforeBuildCommand` として `npm run build` を先に実行し、生成された `dist/` を exe へ埋め込みます。`cargo build` はこの手順を踏まないため、単体では成立しません。
+
+### その他の注意
+
+- 初回ビルドは依存クレート（rav1e などの AVIF エンコーダを含む）のコンパイルに時間がかかります。マシンによっては 10〜30 分程度かかりますが、2 回目以降はキャッシュが効きます。
+- ビルド済みファイルには署名を付けていないため、Windows では初回起動時に SmartScreen の警告が表示されます。`詳細情報` → `実行` で起動できます。
+
 ## 開発環境
 
 必要なもの:
@@ -185,3 +224,16 @@ cargo test --lib -- --skip inspect_desktop_samples_reports_expected_flags
 - 圧縮の結果、出力が元より大きくなることがある（PNG が得意な素材を JPEG へ変換した場合など）。その場合は結果一覧の SAVED 列に `+◯◯ KB / +◯◯%` と増加量を表示する。
 - 形式・寸法・メタデータのいずれも変えない指定（オリジナル維持 / リサイズなし / メタデータ保持）で、再圧縮すると元より大きくなる場合は、元ファイルをコピーする。この場合は `再圧縮すると大きくなるため元ファイルをコピー` を警告として表示する。
 - 動作確認用のサンプル画像と手順は `samples/` および `docs/verification-guide.md` を参照。
+
+## ライセンス
+
+- 本体: MIT License。全文は [LICENSE](LICENSE) を参照。
+- 同梱しているオープンソースソフトウェアの著作権表示とライセンス条文は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にまとめている。
+
+サードパーティ表記は依存グラフから自動生成する。依存を追加・更新したら再生成してコミットすること。
+
+```powershell
+npm run notices
+```
+
+再配布時は `LICENSE` と `THIRD-PARTY-NOTICES.md` を必ず同梱する。msi / nsis / app などのバンドルへは `src-tauri/tauri.conf.json` の `bundle.resources` 経由で自動的に含まれる。ポータブル ZIP を手で作る場合は、この 2 ファイルを自分で入れること。
