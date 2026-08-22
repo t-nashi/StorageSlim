@@ -123,4 +123,116 @@ export interface BatchProgress {
   total: number;
   currentPath: string | null;
   state?: "running" | "paused" | "stopping";
+  /**
+   * 現在処理中のファイル内の進捗率 (0-100)。
+   * 動画は 1 件が長いため必要。画像モードでは送られない。
+   */
+  currentFilePercent?: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// モード
+// ---------------------------------------------------------------------------
+
+/**
+ * アプリの動作モード。画像と動画は同一 UI に混在させない
+ * （`docs/decision-log.md` の `D-17`）。
+ */
+export type AppMode = "image" | "video";
+
+// ---------------------------------------------------------------------------
+// 動画圧縮モード
+// ---------------------------------------------------------------------------
+
+/** Phase 1 の出力は MP4 (H.264 + AAC) のみ。 */
+export type VideoOutputFormat = "mp4H264";
+
+/** 品質はプリセット主体（`D-19`）。CRF は詳細指定でのみ開放する。 */
+export type VideoQualityPreset = "high" | "standard" | "small" | "smallest";
+
+export type VideoAudioMode = "copy" | "aac" | "remove";
+
+export interface VideoSettings {
+  outputFormat: VideoOutputFormat;
+  outputMode: OutputMode;
+  customOutputDir: string | null;
+  overwrite: boolean;
+  resize: ResizeSettings;
+  qualityPreset: VideoQualityPreset;
+  /** CRF 対応エンコーダのときだけ効く。 */
+  crfOverride: number | null;
+  fpsLimit: number | null;
+  audioMode: VideoAudioMode;
+  audioBitrateKbps: number;
+  metadataMode: MetadataMode;
+  timestamps: TimestampSettings;
+  /** 同梱バイナリより優先して使う ffmpeg のパス。 */
+  ffmpegPath: string | null;
+}
+
+export interface VideoInputEntry {
+  id: string;
+  sourcePath: string;
+  rootPath: string;
+  relativePath: string;
+  fileName: string;
+  formatLabel: string;
+  videoCodec: string;
+  audioCodec: string | null;
+  fileSize: number;
+  width: number | null;
+  height: number | null;
+  durationSec: number | null;
+  fps: number | null;
+  variableFrameRate: boolean;
+  bitRate: number | null;
+  rotation: number | null;
+  hasAudio: boolean;
+  audioTrackCount: number;
+  subtitleTrackCount: number;
+  hdr: boolean;
+  warnings: string[];
+}
+
+export interface VideoInspectResponse {
+  entries: VideoInputEntry[];
+  skipped: SkippedItem[];
+  /** 対象外種別の件数。1 件 1 行にすると一覧が埋まるため集約して受け取る。 */
+  excludedCount: number;
+}
+
+export interface VideoResultItem {
+  sourcePath: string;
+  outputPath: string | null;
+  success: boolean;
+  /** 停止操作で打ち切ったもの。失敗とは区別して表示する。 */
+  interrupted: boolean;
+  outputFormat: string | null;
+  originalSize: number;
+  optimizedSize: number | null;
+  savedSize: number | null;
+  savedPercent: number | null;
+  width: number | null;
+  height: number | null;
+  durationSec: number | null;
+  reason: string | null;
+  warnings: string[];
+}
+
+export interface VideoProcessResponse {
+  results: VideoResultItem[];
+}
+
+/** 起動時に確認する FFmpeg の利用可否。 */
+export interface VideoEnvironment {
+  available: boolean;
+  ffmpegPath: string | null;
+  ffprobePath: string | null;
+  version: string | null;
+  /** "setting" | "bundled" | "path" */
+  source: string | null;
+  videoEncoder: string | null;
+  /** "crf" | "bitrate" */
+  rateControl: string | null;
+  message: string | null;
 }

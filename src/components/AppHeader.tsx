@@ -1,11 +1,26 @@
+import { ChoiceGroup, type ChoiceOption } from "./ChoiceGroup";
+import type { AppMode } from "../types";
+
+const modeOptions: Array<ChoiceOption<AppMode>> = [
+  { value: "image", label: "画像圧縮" },
+  { value: "video", label: "動画圧縮" },
+];
+
 export function AppHeader({
   iconUrl,
   tagline,
   version,
+  mode,
+  onModeChange,
+  switchDisabled,
 }: {
   iconUrl: string;
   tagline: string;
   version: string | null;
+  mode: AppMode;
+  onModeChange: (next: AppMode) => void;
+  /** 処理中・読込中はモードを切り替えさせない（`D-17`）。 */
+  switchDisabled: boolean;
 }) {
   return (
     <section className="app-header panel">
@@ -17,7 +32,15 @@ export function AppHeader({
           <p className="app-tagline">{tagline}</p>
         </div>
       </div>
-      {version ? <span className="app-version">v{version}</span> : null}
+      <div className="app-header-aside">
+        <ChoiceGroup
+          value={mode}
+          options={modeOptions}
+          onChange={onModeChange}
+          disabled={switchDisabled}
+        />
+        {version ? <span className="app-version">v{version}</span> : null}
+      </div>
     </section>
   );
 }

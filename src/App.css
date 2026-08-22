@@ -1468,3 +1468,24 @@ button:disabled {
     background-position: 180% 50%;
   }
 }
+
+/* ヘッダー右側。モード切替と版数を横並びにする。 */
+.app-header-aside {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* 現在処理中のファイル内進捗。件数のバーより控えめに見せる。 */
+.progress-bar.is-file {
+  margin-top: 4px;
+  height: 4px;
+  opacity: 0.75;
+}
+
+/* 設定項目に添える補足。1 行で収まる短い説明にとどめる。 */
+.field-note {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}

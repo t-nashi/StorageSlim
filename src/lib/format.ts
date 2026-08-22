@@ -44,3 +44,16 @@ export function formatDimension(width: number | null, height: number | null): st
   }
   return `${width} x ${height}`;
 }
+
+/** 再生時間の表示。1 時間以上は `1:02:03`、それ未満は `2:03`。 */
+export function formatDuration(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) {
+    return "-";
+  }
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
+}
