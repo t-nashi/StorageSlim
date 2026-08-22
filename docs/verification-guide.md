@@ -282,17 +282,26 @@ failed to decode image: Memory limit exceeded
 
 ### 8-0. 準備
 
-FFmpeg が必要です。次のいずれかを満たしていること。
+FFmpeg が必要です。Windows は同梱、macOS は各自の用意になります。
 
-- `PATH` に `ffmpeg` / `ffprobe` がある
-- 設定の詳細 → `ffmpeg のパス` に実行ファイルのパスを入れた
+Windows:
 
-`npm run ffmpeg` で LGPL 構成のビルドを `src-tauri/binaries/` へ取得できますが、`externalBin` への配線は未完了のため、現時点では上の 2 つで確認します。
+```powershell
+npm run ffmpeg
+```
+
+これを実行してから `npm run tauri build` します。未実行のままビルドすると `resource path binaries\FFMPEG-LICENSE.txt doesn't exist` のようなエラーで止まります。
+
+macOS: LGPL 構成の配布ビルドが無いため同梱していません。`PATH` に `ffmpeg` / `ffprobe` を入れるか、設定の詳細 → `ffmpeg のパス` を指定します。
 
 確認:
 
 - 動画モードの詳細設定に、検出した FFmpeg のバージョン・エンコーダ名・経路（`setting` / `bundled` / `path`）が出る
+- Windows の同梱ビルドでは経路が `bundled` になり、エンコーダが `h264_nvenc` / `h264_qsv` / `h264_amf` / `h264_mf` / `libopenh264` のいずれかになる（`libx264` は同梱ビルドに入っていない）
+- macOS では経路が `path` または `setting` になる
+- `ffmpeg のパス` に自分の GPL ビルドを指定すると、エンコーダが `libx264` に変わり、CRF 指定が有効になる
 - FFmpeg が見つからない場合、入力と結果パネルの上に理由が赤帯で出て、`圧縮を実行` が押せない
+- 対応ハードウェアが無い環境でも H.264 出力が成功する（動くエンコーダを実際に試して選ぶため）
 
 ### 8-1. モード切替
 
