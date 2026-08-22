@@ -40,6 +40,8 @@ use std::{
 #[cfg(windows)]
 use windows_sys::Win32::{Foundation::FILETIME, Storage::FileSystem::SetFileTime};
 
+mod video;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum InputFormat {
@@ -90,14 +92,14 @@ struct InspectResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SkippedItem {
-    path: String,
-    reason: String,
+pub(crate) struct SkippedItem {
+    pub(crate) path: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum ResizeMode {
+pub(crate) enum ResizeMode {
     None,
     Width,
     Height,
@@ -106,17 +108,17 @@ enum ResizeMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum ResizeUnit {
+pub(crate) enum ResizeUnit {
     Px,
     Percent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ResizeSettings {
-    mode: ResizeMode,
-    value: Option<u32>,
-    unit: ResizeUnit,
+pub(crate) struct ResizeSettings {
+    pub(crate) mode: ResizeMode,
+    pub(crate) value: Option<u32>,
+    pub(crate) unit: ResizeUnit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,21 +133,21 @@ struct QualitySettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum MetadataMode {
+pub(crate) enum MetadataMode {
     Strip,
     Keep,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TimestampSettings {
-    preserve_creation_time: bool,
-    preserve_last_write_time: bool,
+pub(crate) struct TimestampSettings {
+    pub(crate) preserve_creation_time: bool,
+    pub(crate) preserve_last_write_time: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum OutputMode {
+pub(crate) enum OutputMode {
     DesktopDefault,
     Custom,
 }
@@ -220,9 +222,9 @@ enum BatchProgressState {
 }
 
 #[derive(Clone, Default)]
-struct BatchControl {
-    paused: Arc<AtomicBool>,
-    stop_requested: Arc<AtomicBool>,
+pub(crate) struct BatchControl {
+    pub(crate) paused: Arc<AtomicBool>,
+    pub(crate) stop_requested: Arc<AtomicBool>,
 }
 
 #[tauri::command]
@@ -401,7 +403,7 @@ fn decode_limit_bytes(decode_limit_mb: u32) -> u64 {
     u64::from(decode_limit_mb.clamp(DECODE_LIMIT_MIN_MB, DECODE_LIMIT_MAX_MB)) * 1024 * 1024
 }
 
-fn catch_task_panic<T, F>(label: &str, task: F) -> Result<T>
+pub(crate) fn catch_task_panic<T, F>(label: &str, task: F) -> Result<T>
 where
     F: FnOnce() -> Result<T>,
 {
@@ -1090,7 +1092,7 @@ fn resolve_output_root(settings: &BatchSettings) -> Result<PathBuf> {
     }
 }
 
-fn default_output_root() -> Result<PathBuf> {
+pub(crate) fn default_output_root() -> Result<PathBuf> {
     let desktop = desktop_dir().ok_or_else(|| anyhow!("desktop directory not available"))?;
     Ok(desktop.join("@StorageSlim").join("output"))
 }
@@ -1115,8 +1117,24 @@ fn build_output_path(
     output_format: OutputFormat,
     overwrite: bool,
 ) -> Result<PathBuf> {
-    let extension = output_extension(entry, output_format);
-    let relative_path = Path::new(&entry.relative_path);
+    build_output_path_from(
+        &entry.relative_path,
+        output_root,
+        output_extension(entry, output_format),
+        overwrite,
+    )
+}
+
+/// 入力の相対パスと拡張子から出力先を決める。
+///
+/// 上書きを許可しない場合は連番を付与する。画像・動画で共通の規則。
+pub(crate) fn build_output_path_from(
+    relative: &str,
+    output_root: &Path,
+    extension: &str,
+    overwrite: bool,
+) -> Result<PathBuf> {
+    let relative_path = Path::new(relative);
     let stem = relative_path
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
@@ -1299,15 +1317,26 @@ fn gif_speed_from_colors(colors: u16) -> i32 {
 }
 
 fn apply_timestamps(entry: &InputEntry, settings: &BatchSettings, output_path: &Path) -> Result<()> {
-    let metadata = fs::metadata(&entry.source_path)?;
-    if settings.timestamps.preserve_last_write_time {
+    apply_timestamps_from(Path::new(&entry.source_path), &settings.timestamps, output_path)
+}
+
+/// 入力ファイルのタイムスタンプを出力へ引き継ぐ。
+///
+/// 画像・動画のどちらからも呼ぶため、入力の種別に依存しない引数にしている。
+pub(crate) fn apply_timestamps_from(
+    source_path: &Path,
+    settings: &TimestampSettings,
+    output_path: &Path,
+) -> Result<()> {
+    let metadata = fs::metadata(source_path)?;
+    if settings.preserve_last_write_time {
         if let Ok(modified) = metadata.modified() {
             set_file_mtime(output_path, FileTime::from_system_time(modified))?;
         }
     }
 
     #[cfg(windows)]
-    if settings.timestamps.preserve_creation_time {
+    if settings.preserve_creation_time {
         if let Ok(created) = metadata.created() {
             set_windows_creation_time(output_path, created)?;
         }
@@ -1342,7 +1371,7 @@ fn system_time_to_filetime(time: SystemTime) -> FILETIME {
 }
 
 #[cfg(not(windows))]
-fn is_hidden_or_system(path: &Path) -> bool {
+pub(crate) fn is_hidden_or_system(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with('.'))
@@ -1350,7 +1379,7 @@ fn is_hidden_or_system(path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn is_hidden_or_system(path: &Path) -> bool {
+pub(crate) fn is_hidden_or_system(path: &Path) -> bool {
     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
     const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
     let dotfile = path
@@ -1382,7 +1411,10 @@ pub fn run() {
             pause_batch,
             resume_batch,
             stop_batch,
-            get_default_output_dir
+            get_default_output_dir,
+            video::video_environment,
+            video::inspect_video_inputs,
+            video::process_video_batch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
