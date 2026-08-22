@@ -1002,6 +1002,7 @@ Phase 2 に置いた出力形式（WebM VP9 / MP4 AV1 / MP4 HEVC）のうち、�
 ### 保留条件 / 再確認条件
 
 - `libvpx-vp9` の速度が実用に耐えない場合は `-cpu-used` の既定値を見直す
+  - 2026-08-23 に計測し、変更不要と判断した。4K 素材の 70 秒を 27 秒（約 2.6 倍速）で処理できている。計測値は `docs/format-matrix-video.md` の 8 章。
 
 ### requirements.md 反映要否
 
