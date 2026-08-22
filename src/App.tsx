@@ -7,14 +7,15 @@ import { readDir } from "@tauri-apps/plugin-fs";
 import appIconUrl from "./assets/storageslim-icon.svg";
 import "./App.css";
 import { AppHeader } from "./components/AppHeader";
-import { ChoiceGroup, type ChoiceOption } from "./components/ChoiceGroup";
+import type { ChoiceOption } from "./components/ChoiceGroup";
+import { ImageSettingsPanel } from "./components/ImageSettingsPanel";
 import { PathPickerField } from "./components/PathPickerField";
 import { ProgressPanel } from "./components/ProgressPanel";
-import { QualityField } from "./components/QualityField";
 import { InlineLoading, SkippedList, TablePanel, TableScroll } from "./components/TablePanel";
 import { useDropTarget } from "./hooks/useDropTarget";
 import { clamp, formatBytes, formatDimension, formatSavedDelta } from "./lib/format";
 import { deriveDefaultInputDir, fileNameFromPath, joinNativePath } from "./lib/paths";
+import { isResizeValueMissing, resizeModeOptions } from "./lib/settings";
 import type {
   BatchProgress,
   BatchSettings,
@@ -22,8 +23,6 @@ import type {
   InspectResponse,
   OutputFormat,
   ProcessResponse,
-  ResizeMode,
-  ResizeUnit,
   SkippedItem,
 } from "./types";
 import {
@@ -61,23 +60,6 @@ const outputOptions: Array<{ value: OutputFormat; label: string }> = [
   { value: "png", label: "PNG" },
   { value: "webp", label: "WebP" },
   { value: "avif", label: "AVIF" },
-];
-
-const resizeModeOptions: Array<ChoiceOption<ResizeMode>> = [
-  { value: "none", label: "変更なし" },
-  { value: "width", label: "幅" },
-  { value: "height", label: "高さ" },
-  { value: "longEdge", label: "長辺" },
-];
-
-const resizeUnitOptions: Array<ChoiceOption<ResizeUnit>> = [
-  { value: "px", label: "px" },
-  { value: "percent", label: "%" },
-];
-
-const metadataOptions: Array<ChoiceOption<BatchSettings["metadataMode"]>> = [
-  { value: "strip", label: "削除する" },
-  { value: "keep", label: "保持する" },
 ];
 
 function createDefaultSettings(defaultOutputDir: string): BatchSettings {
@@ -440,7 +422,6 @@ function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // tauri.conf.json の version を表示する。不具合報告時にビルドを特定できるようにするため。
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const dropActive = useDropTarget(addPaths);
 
   useEffect(() => {
@@ -597,11 +578,7 @@ function App() {
     [allowedOutputs],
   );
 
-  const resizeValueDisabled = settings?.resize.mode === "none";
-  const resizeValueUnit = settings?.resize.unit ?? "px";
-  const resizeValueMax = resizeValueUnit === "percent" ? 100 : 100000;
-  const resizeValueRequired = !resizeValueDisabled;
-  const resizeValueMissing = resizeValueRequired && (settings?.resize.value == null || settings.resize.value <= 0);
+  const resizeValueMissing = settings ? isResizeValueMissing(settings.resize) : true;
   const canRunBatch = entries.length > 0 && !busy && !inputLoading && !resizeValueMissing;
 
   async function addPaths(paths: string[]) {
@@ -858,280 +835,17 @@ function App() {
       <AppHeader iconUrl={appIconUrl} tagline="画像最適化ワークベンチ" version={appVersion} />
 
       <section className="app-grid">
-        <aside className="panel settings-panel">
-          <div className="panel-header">
-            <div className="title-inline">
-              <h2>設定</h2>
-              <button type="button" className="ghost micro-button" onClick={resetAllSettings}>
-                初期化
-              </button>
-            </div>
-          </div>
-
-          <div className="settings-stack">
-            <div className="field setting-output-format">
-              <span>出力形式</span>
-              <ChoiceGroup
-                value={settings.outputFormat}
-                options={outputFormatChoices}
-                onChange={(outputFormat) => updateSettings((current) => ({ ...current, outputFormat }))}
-              />
-            </div>
-
-            <div className="field setting-resize-mode">
-              <span>リサイズ基準</span>
-              <div className={`resize-control-row ${resizeValueMissing ? "is-required" : ""}`}>
-                <ChoiceGroup
-                  value={settings.resize.mode}
-                  options={resizeModeOptions}
-                  onChange={(mode) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      resize: {
-                        ...current.resize,
-                        mode,
-                      },
-                    }))
-                  }
-                />
-                <div className="resize-value-inline">
-                  <input
-                    type="number"
-                    min={1}
-                    max={resizeValueMax}
-                    disabled={resizeValueDisabled}
-                    aria-invalid={resizeValueMissing}
-                    value={settings.resize.value ?? ""}
-                    placeholder={resizeValueMissing ? "必須" : ""}
-                    onChange={(event) => {
-                      const rawValue = event.currentTarget.value;
-                      if (rawValue !== "") {
-                        setErrorMessage((current) =>
-                          current === "リサイズ基準を選択した場合はリサイズ値の入力が必要です。" ? null : current,
-                        );
-                      }
-                      updateSettings((current) => {
-                        const parsed = Number(rawValue);
-                        return {
-                          ...current,
-                          resize: {
-                            ...current.resize,
-                            value:
-                              rawValue === ""
-                                ? null
-                                : Number.isFinite(parsed)
-                                  ? clamp(Math.round(parsed), 1, resizeValueMax)
-                                  : current.resize.value,
-                          },
-                        };
-                      });
-                    }}
-                  />
-                  <ChoiceGroup
-                    value={settings.resize.unit}
-                    options={resizeUnitOptions}
-                    disabled={resizeValueDisabled}
-                    onChange={(unit) =>
-                      updateSettings((current) => ({
-                        ...current,
-                        resize: {
-                          ...current.resize,
-                          unit,
-                          value:
-                            current.resize.value == null
-                              ? null
-                              : clamp(Math.round(current.resize.value), 1, unit === "percent" ? 100 : 100000),
-                        },
-                      }))
-                    }
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="field setting-metadata">
-              <span>メタデータ</span>
-              <ChoiceGroup
-                value={settings.metadataMode}
-                options={metadataOptions}
-                onChange={(metadataMode) => updateSettings((current) => ({ ...current, metadataMode }))}
-              />
-            </div>
-
-            <div className="advanced-toggle">
-              <button
-                type="button"
-                className={`section-disclosure ${advancedExpanded ? "is-open" : ""}`}
-                aria-expanded={advancedExpanded}
-                onClick={() => setAdvancedExpanded((current) => !current)}
-              >
-                <span className="section-disclosure-copy">
-                  <strong>品質調整・その他</strong>
-                </span>
-                <span className="section-disclosure-chevron" aria-hidden="true">
-                  {advancedExpanded ? "▾" : "▸"}
-                </span>
-              </button>
-            </div>
-
-            {advancedExpanded ? (
-              <div className="quality-grid">
-                <QualityField
-                  label="JPEG (1-100)"
-                  value={settings.quality.jpegQuality}
-                  min={1}
-                  max={100}
-                  onChange={(jpegQuality) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      quality: { ...current.quality, jpegQuality },
-                    }))
-                  }
-                />
-                <QualityField
-                  label="WebP (1-100)"
-                  value={settings.quality.webpQuality}
-                  min={1}
-                  max={100}
-                  onChange={(webpQuality) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      quality: { ...current.quality, webpQuality },
-                    }))
-                  }
-                />
-                <QualityField
-                  label="AVIF (1-100)"
-                  value={settings.quality.avifQuality}
-                  min={1}
-                  max={100}
-                  onChange={(avifQuality) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      quality: { ...current.quality, avifQuality },
-                    }))
-                  }
-                />
-                <QualityField
-                  label="PNG (0-9)"
-                  value={settings.quality.pngCompression}
-                  min={0}
-                  max={9}
-                  onChange={(pngCompression) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      quality: { ...current.quality, pngCompression },
-                    }))
-                  }
-                />
-                <QualityField
-                  label="GIF (2-256)"
-                  value={settings.quality.gifColors}
-                  min={2}
-                  max={256}
-                  onChange={(gifColors) =>
-                    updateSettings((current) => ({
-                      ...current,
-                      quality: { ...current.quality, gifColors },
-                    }))
-                  }
-                />
-              </div>
-            ) : null}
-
-            {advancedExpanded ? (
-              <div className="field setting-other-panel">
-                <div className="checkbox-cluster">
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={settings.timestamps.preserveCreationTime}
-                      onChange={(event) => {
-                        const checked = event.currentTarget.checked;
-                        updateSettings((current) => ({
-                          ...current,
-                          timestamps: {
-                            ...current.timestamps,
-                            preserveCreationTime: checked,
-                          },
-                        }));
-                      }}
-                    />
-                    <span>作成日時を引き継ぐ</span>
-                  </label>
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={settings.timestamps.preserveLastWriteTime}
-                      onChange={(event) => {
-                        const checked = event.currentTarget.checked;
-                        updateSettings((current) => ({
-                          ...current,
-                          timestamps: {
-                            ...current.timestamps,
-                            preserveLastWriteTime: checked,
-                          },
-                        }));
-                      }}
-                    />
-                    <span>更新日時を引き継ぐ</span>
-                  </label>
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={settings.overwrite}
-                      onChange={(event) => {
-                        const checked = event.currentTarget.checked;
-                        updateSettings((current) => ({
-                          ...current,
-                          overwrite: checked,
-                        }));
-                      }}
-                    />
-                    <span>上書きを許可する</span>
-                  </label>
-                </div>
-
-                <div className="decode-limit">
-                  <label className="decode-limit-label" htmlFor="decode-limit">
-                    デコード上限
-                  </label>
-                  <input
-                    id="decode-limit"
-                    className="decode-limit-input"
-                    type="number"
-                    inputMode="numeric"
-                    min={DECODE_LIMIT_MIN_MB}
-                    max={DECODE_LIMIT_MAX_MB}
-                    step={64}
-                    value={settings.decodeLimitMb}
-                    onChange={(event) => {
-                      const parsed = Number(event.currentTarget.value);
-                      if (!Number.isFinite(parsed)) {
-                        return;
-                      }
-                      updateSettings((current) => ({ ...current, decodeLimitMb: Math.round(parsed) }));
-                    }}
-                    onBlur={(event) => {
-                      const parsed = Number(event.currentTarget.value);
-                      const next = Number.isFinite(parsed)
-                        ? clamp(Math.round(parsed), DECODE_LIMIT_MIN_MB, DECODE_LIMIT_MAX_MB)
-                        : DECODE_LIMIT_DEFAULT_MB;
-                      updateSettings((current) => ({ ...current, decodeLimitMb: next }));
-                    }}
-                  />
-                  <span className="decode-limit-unit">MB</span>
-                  <small className="decode-limit-hint">
-                    既定 {DECODE_LIMIT_DEFAULT_MB} / 範囲 {DECODE_LIMIT_MIN_MB}-{DECODE_LIMIT_MAX_MB}
-                    <span className="decode-limit-note">
-                      大きな画像の読込に必要な量。上げすぎるとメモリ不足でアプリが終了する場合があります
-                    </span>
-                  </small>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </aside>
+        <ImageSettingsPanel
+          settings={settings}
+          updateSettings={updateSettings}
+          outputFormatChoices={outputFormatChoices}
+          onResetAll={resetAllSettings}
+          clearResizeError={() =>
+            setErrorMessage((current) =>
+              current === "リサイズ基準を選択した場合はリサイズ値の入力が必要です。" ? null : current,
+            )
+          }
+        />
 
         <section className={`panel workspace-panel ${dropActive ? "drop-active" : ""}`}>
           <div className="workspace-header">
