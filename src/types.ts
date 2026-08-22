@@ -221,6 +221,8 @@ export interface VideoResultItem {
   width: number | null;
   height: number | null;
   durationSec: number | null;
+  /** このファイルの処理にかかった時間 (ms)。コデックごとの速度差を比べるために出す。 */
+  elapsedMs: number;
   reason: string | null;
   warnings: string[];
 }

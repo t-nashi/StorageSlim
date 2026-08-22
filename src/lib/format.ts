@@ -57,3 +57,15 @@ export function formatDuration(seconds: number | null): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
 }
+
+/** 処理時間の表示。1 分未満は `12.3 秒`、それ以上は `2:05`。 */
+export function formatElapsed(milliseconds: number | null): string {
+  if (milliseconds == null || !Number.isFinite(milliseconds) || milliseconds <= 0) {
+    return "-";
+  }
+  const seconds = milliseconds / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)} 秒`;
+  }
+  return formatDuration(seconds);
+}

@@ -11,7 +11,13 @@ import { ProgressPanel } from "../components/ProgressPanel";
 import { InlineLoading, SkippedList, TablePanel, TableScroll } from "../components/TablePanel";
 import { VideoSettingsPanel } from "../components/VideoSettingsPanel";
 import { useDropTarget } from "../hooks/useDropTarget";
-import { formatBytes, formatDimension, formatDuration, formatSavedDelta } from "../lib/format";
+import {
+  formatBytes,
+  formatDimension,
+  formatDuration,
+  formatElapsed,
+  formatSavedDelta,
+} from "../lib/format";
 import { deriveDefaultInputDir, fileNameFromPath } from "../lib/paths";
 import { INITIAL_PROGRESS } from "../lib/progress";
 import { isResizeValueMissing } from "../lib/settings";
@@ -381,6 +387,10 @@ export function VideoMode({
     [results],
   );
   const interruptedCount = useMemo(() => results.filter((result) => result.interrupted).length, [results]);
+  const totalElapsedMs = useMemo(
+    () => results.reduce((sum, result) => sum + (result.elapsedMs ?? 0), 0),
+    [results],
+  );
 
   const resizeValueMissing = settings ? isResizeValueMissing(settings.resize) : true;
   // 出力形式ごとに使えるエンコーダが違うため、選択中の形式で判定する。
@@ -843,6 +853,9 @@ export function VideoMode({
                   {interruptedCount > 0 ? (
                     <span className="summary-pill">中断: {interruptedCount} 件</span>
                   ) : null}
+                  {totalElapsedMs > 0 ? (
+                    <span className="summary-pill">所要: {formatElapsed(totalElapsedMs)}</span>
+                  ) : null}
                 </>
               }
               actions={
@@ -862,16 +875,18 @@ export function VideoMode({
                     <tr>
                       <th className="cell-path">入力</th>
                       <th className="cell-path">出力</th>
+                      <th>寸法</th>
                       <th>Original</th>
                       <th>Optimized</th>
                       <th>Saved</th>
+                      <th>時間</th>
                       <th>状態</th>
                     </tr>
                   </thead>
                   <tbody>
                     {results.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="empty-cell">
+                        <td colSpan={8} className="empty-cell">
                           まだ処理結果がありません
                         </td>
                       </tr>
@@ -904,11 +919,13 @@ export function VideoMode({
                               </small>
                             </div>
                           </td>
+                          <td>{result.success ? formatDimension(result.width, result.height) : "-"}</td>
                           <td>{formatBytes(result.originalSize)}</td>
                           <td>{formatBytes(result.optimizedSize)}</td>
                           <td className={result.success && (result.savedSize ?? 0) < 0 ? "size-increased" : undefined}>
                             {result.success ? formatSavedDelta(result.savedSize, result.savedPercent) : "-"}
                           </td>
+                          <td>{formatElapsed(result.elapsedMs)}</td>
                           <td>
                             <div className="tag-list">
                               <span

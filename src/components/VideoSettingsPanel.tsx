@@ -225,11 +225,17 @@ export function VideoSettingsPanel({
             onChange={(qualityPreset) => updateSettings((current) => ({ ...current, qualityPreset }))}
           />
           <small className="field-note">
-            目安: 1080p30 で 1 分あたり約{" "}
-            {estimatedMbPerMinute(settings.qualityPreset, settings.outputFormat).toFixed(0)} MB
             {crfSupported
-              ? `（CRF ${PRESET_CRF[settings.outputFormat][settings.qualityPreset]} 相当）`
-              : "（ビットレート指定）"}
+              ? // CRF は固定品質なので、サイズは素材次第で目安から大きく外れる。
+                `CRF ${PRESET_CRF[settings.outputFormat][settings.qualityPreset]} で固定品質。1080p30 で 1 分あたり ${estimatedMbPerMinute(
+                  settings.qualityPreset,
+                  settings.outputFormat,
+                ).toFixed(0)} MB 程度を目安に、素材により増減します`
+              : // ビットレート指定なら、この値がそのまま目標になる。
+                `ビットレート指定。1080p30 で 1 分あたり約 ${estimatedMbPerMinute(
+                  settings.qualityPreset,
+                  settings.outputFormat,
+                ).toFixed(0)} MB`}
           </small>
         </div>
 
@@ -366,7 +372,6 @@ export function VideoSettingsPanel({
                   }));
                 }}
               />
-              <span className="decode-limit-unit">CRF</span>
               <small className="decode-limit-hint">
                 {crfSupported
                   ? `空欄でプリセットに従う。小さいほど高品質 (0-${crfMax})`

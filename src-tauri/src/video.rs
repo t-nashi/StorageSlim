@@ -275,6 +275,8 @@ pub(crate) struct VideoResultItem {
     width: Option<u32>,
     height: Option<u32>,
     duration_sec: Option<f64>,
+    /// このファイルの処理にかかった時間。コデックごとの速度差を結果から比べられるようにする。
+    elapsed_ms: u64,
     reason: Option<String>,
     warnings: Vec<String>,
 }
@@ -1366,7 +1368,8 @@ fn process_impl(
             Some(0.0),
         );
 
-        let result = catch_task_panic("video processing", || {
+        let started = Instant::now();
+        let mut result = catch_task_panic("video processing", || {
             process_one(
                 &window,
                 &control,
@@ -1379,6 +1382,8 @@ fn process_impl(
             )
         })
         .unwrap_or_else(|error| failure_item(entry, format!("{error:#}")));
+        // 成功・失敗・中断のどれでも同じ計り方になるよう、ここで入れる。
+        result.elapsed_ms = started.elapsed().as_millis() as u64;
 
         let interrupted = result.interrupted;
         results.push(result);
@@ -1422,6 +1427,7 @@ fn failure_item(entry: &VideoInputEntry, reason: String) -> VideoResultItem {
         width: entry.width,
         height: entry.height,
         duration_sec: entry.duration_sec,
+        elapsed_ms: 0,
         reason: Some(reason),
         warnings: Vec::new(),
     }
@@ -1483,6 +1489,7 @@ fn process_one(
             width: entry.width,
             height: entry.height,
             duration_sec: entry.duration_sec,
+            elapsed_ms: 0,
             reason: Some("中断（出力を破棄しました）".to_string()),
             warnings: Vec::new(),
         });
@@ -1547,6 +1554,7 @@ fn process_one(
         width,
         height,
         duration_sec: entry.duration_sec,
+        elapsed_ms: 0,
         reason: None,
         warnings,
     })
