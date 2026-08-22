@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -6,6 +6,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readDir } from "@tauri-apps/plugin-fs";
 import appIconUrl from "./assets/storageslim-icon.svg";
 import "./App.css";
+import { AppHeader } from "./components/AppHeader";
+import { ChoiceGroup, type ChoiceOption } from "./components/ChoiceGroup";
+import { PathPickerField } from "./components/PathPickerField";
+import { ProgressPanel } from "./components/ProgressPanel";
+import { QualityField } from "./components/QualityField";
+import { InlineLoading, SkippedList, TablePanel, TableScroll } from "./components/TablePanel";
+import { useDropTarget } from "./hooks/useDropTarget";
+import { clamp, formatBytes, formatDimension, formatSavedDelta } from "./lib/format";
+import { deriveDefaultInputDir, fileNameFromPath, joinNativePath } from "./lib/paths";
 import type {
   BatchProgress,
   BatchSettings,
@@ -28,13 +37,6 @@ import {
   WEBP_MAX_DIMENSION,
 } from "./types";
 
-type ChoiceOption<T extends string> = {
-  value: T;
-  label: string;
-  disabled?: boolean;
-  title?: string;
-};
-
 const STORAGE_KEY = "storageslim.settings.v1";
 const INPUT_SOURCE_KEY = "storageslim.inputSourceDir.v1";
 const imageExtensions = new Set(["gif", "jpg", "jpeg", "png", "webp", "avif", "heic", "heif"]);
@@ -50,10 +52,6 @@ function hasAllowedImageExtension(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
   const extension = normalized.split(".").pop()?.toLowerCase();
   return extension ? imageExtensions.has(extension) : false;
-}
-
-function joinNativePath(parent: string, child: string): string {
-  return `${parent.replace(/[\\/]+$/, "")}/${child}`;
 }
 
 const outputOptions: Array<{ value: OutputFormat; label: string }> = [
@@ -118,25 +116,6 @@ const INITIAL_PROGRESS: BatchProgress = {
   total: 0,
   currentPath: null,
 };
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function roundToStep(value: number, min: number, max: number, step: number): number {
-  const snapped = Math.round((value - min) / step) * step + min;
-  return clamp(Number(snapped.toFixed(4)), min, max);
-}
-
-function deriveDefaultInputDir(defaultOutputDir: string): string {
-  if (!defaultOutputDir) {
-    return "Desktop/@StorageSlim/input";
-  }
-  if (/[\\/]output$/i.test(defaultOutputDir)) {
-    return defaultOutputDir.replace(/[\\/]output$/i, (match) => match.replace(/output/i, "input"));
-  }
-  return `${defaultOutputDir.replace(/[\\/]?$/, "")}/input`;
-}
 
 async function collectImageFilesInDirectory(rootPath: string): Promise<string[]> {
   const files: string[] = [];
@@ -237,51 +216,6 @@ function loadStoredInputSourceDir(defaultInputDir: string): string {
     // Ignore malformed local state and fall back.
   }
   return defaultInputDir;
-}
-
-function formatBytes(bytes: number | null): string {
-  if (bytes == null) {
-    return "-";
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  const units = ["KB", "MB", "GB"];
-  let value = bytes / 1024;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unitIndex]}`;
-}
-
-/**
- * 削減量の表示。savedSize が負のとき（出力の方が大きくなったとき）は
- * `+102.6 KB / +766.0%` のように増加であることを明示する。
- */
-function formatSavedDelta(savedSize: number | null, savedPercent: number | null): string {
-  if (savedSize == null || savedPercent == null) {
-    return "-";
-  }
-  if (savedSize < 0) {
-    return `+${formatBytes(-savedSize)} / +${Math.abs(savedPercent).toFixed(1)}%`;
-  }
-  return `${formatBytes(savedSize)} / ${savedPercent.toFixed(1)}%`;
-}
-
-function formatDimension(width: number | null, height: number | null): string {
-  if (!width || !height) {
-    return "-";
-  }
-  return `${width} x ${height}`;
-}
-
-function fileNameFromPath(path: string | null): string | null {
-  if (!path) {
-    return null;
-  }
-  return path.split(/[\\/]/).pop() ?? path;
 }
 
 /** 実行前に予測できる問題。処理を待たずに入力一覧へ出す。 */
@@ -490,181 +424,6 @@ function mergeEntries(current: InputEntry[], incoming: InputEntry[]): InputEntry
   return Array.from(merged.values()).sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
 }
 
-function ChoiceGroup<T extends string>({
-  value,
-  options,
-  onChange,
-  disabled = false,
-}: {
-  value: T;
-  options: Array<ChoiceOption<T>>;
-  onChange: (nextValue: T) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className={`choice-group ${disabled ? "is-disabled" : ""}`}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          className={`choice-chip ${value === option.value ? "active" : ""}`}
-          aria-pressed={value === option.value}
-          disabled={disabled || option.disabled}
-          title={option.title}
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function CustomSlider({
-  value,
-  min,
-  max,
-  step = 1,
-  onChange,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  onChange: (nextValue: number) => void;
-}) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const draggingRef = useRef(false);
-
-  useEffect(() => {
-    function updateFromClientX(clientX: number) {
-      const track = trackRef.current;
-      if (!track) {
-        return;
-      }
-      const rect = track.getBoundingClientRect();
-      const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
-      const nextValue = roundToStep(min + ratio * (max - min), min, max, step);
-      onChange(nextValue);
-    }
-
-    function handleMove(event: MouseEvent) {
-      if (!draggingRef.current) {
-        return;
-      }
-      updateFromClientX(event.clientX);
-    }
-
-    function handleUp() {
-      draggingRef.current = false;
-    }
-
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    };
-  }, [max, min, onChange, step]);
-
-  const ratio = ((value - min) / (max - min)) * 100;
-
-  return (
-    <div
-      ref={trackRef}
-      className="custom-slider"
-      onMouseDown={(event) => {
-        draggingRef.current = true;
-        const rect = trackRef.current?.getBoundingClientRect();
-        if (!rect) {
-          return;
-        }
-        const nextValue = roundToStep(min + ((event.clientX - rect.left) / rect.width) * (max - min), min, max, step);
-        onChange(nextValue);
-      }}
-    >
-      <div className="custom-slider-fill" style={{ width: `${ratio}%` }} />
-      <div className="custom-slider-thumb" style={{ left: `${ratio}%` }} />
-    </div>
-  );
-}
-
-function QualityField({
-  label,
-  value,
-  min,
-  max,
-  step = 1,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  onChange: (nextValue: number) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(String(value));
-
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
-  function commit(nextRaw: string) {
-    const parsed = Number(nextRaw);
-    const next = roundToStep(Number.isFinite(parsed) ? parsed : value, min, max, step);
-    onChange(next);
-    setDraft(String(next));
-    setEditing(false);
-  }
-
-  return (
-    <div className="value-card">
-      <div className="value-card-header">
-        <span>{label}</span>
-        {editing ? (
-          <input
-            className="value-inline-input"
-            type="number"
-            min={min}
-            max={max}
-            step={step}
-            value={draft}
-            autoFocus
-            onChange={(event) => {
-              const nextRaw = event.currentTarget.value;
-              setDraft(nextRaw);
-              if (nextRaw === "") {
-                return;
-              }
-              const parsed = Number(nextRaw);
-              if (Number.isFinite(parsed)) {
-                onChange(roundToStep(parsed, min, max, step));
-              }
-            }}
-            onBlur={() => commit(draft)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                commit(draft);
-              }
-              if (event.key === "Escape") {
-                setDraft(String(value));
-                setEditing(false);
-              }
-            }}
-          />
-        ) : (
-          <button type="button" className="value-chip" onClick={() => setEditing(true)}>
-            {value}
-          </button>
-        )}
-      </div>
-      <CustomSlider value={value} min={min} max={max} step={step} onChange={onChange} />
-    </div>
-  );
-}
-
 function App() {
   const [defaultOutputDir, setDefaultOutputDir] = useState("");
   const [defaultInputDir, setDefaultInputDir] = useState("");
@@ -679,11 +438,10 @@ function App() {
   const [stopping, setStopping] = useState(false);
   const [inputLoading, setInputLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [dropActive, setDropActive] = useState(false);
   // tauri.conf.json の version を表示する。不具合報告時にビルドを特定できるようにするため。
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
-  const dropDepthRef = useRef(0);
+  const dropActive = useDropTarget(addPaths);
 
   useEffect(() => {
     let active = true;
@@ -722,32 +480,11 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    let unlistenDrop: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
 
     async function bind() {
       try {
         const webview = getCurrentWebview();
-        unlistenDrop = await webview.onDragDropEvent(async (event) => {
-          if (event.payload.type === "enter" || event.payload.type === "over") {
-            if (active) {
-              setDropActive(true);
-            }
-            return;
-          }
-          if (event.payload.type === "leave") {
-            if (active) {
-              setDropActive(false);
-            }
-            return;
-          }
-          if (event.payload.type === "drop") {
-            if (active) {
-              setDropActive(false);
-            }
-            await addPaths(event.payload.paths);
-          }
-        });
         unlistenProgress = await webview.listen<BatchProgress>("batch-progress", (event) => {
           if (active) {
             setProgress(event.payload);
@@ -764,50 +501,15 @@ function App() {
           }
         });
       } catch (error) {
-        console.warn("StorageSlim: Tauri webview binding is unavailable in this environment.", error);
+        console.warn("StorageSlim: Tauri progress binding is unavailable in this environment.", error);
       }
     }
 
     void bind();
 
-    const handleDragEnter = (event: DragEvent) => {
-      event.preventDefault();
-      dropDepthRef.current += 1;
-      setDropActive(true);
-    };
-
-    const handleDragOver = (event: DragEvent) => {
-      event.preventDefault();
-      setDropActive(true);
-    };
-
-    const handleDragLeave = (event: DragEvent) => {
-      event.preventDefault();
-      dropDepthRef.current = Math.max(0, dropDepthRef.current - 1);
-      if (dropDepthRef.current === 0) {
-        setDropActive(false);
-      }
-    };
-
-    const handleDrop = (event: DragEvent) => {
-      event.preventDefault();
-      dropDepthRef.current = 0;
-      setDropActive(false);
-    };
-
-    window.addEventListener("dragenter", handleDragEnter);
-    window.addEventListener("dragover", handleDragOver);
-    window.addEventListener("dragleave", handleDragLeave);
-    window.addEventListener("drop", handleDrop);
-
     return () => {
       active = false;
-      unlistenDrop?.();
       unlistenProgress?.();
-      window.removeEventListener("dragenter", handleDragEnter);
-      window.removeEventListener("dragover", handleDragOver);
-      window.removeEventListener("dragleave", handleDragLeave);
-      window.removeEventListener("drop", handleDrop);
     };
   }, []);
 
@@ -1153,17 +855,7 @@ function App() {
         stoppingEffective ? "is-stopping" : ""
       }`}
     >
-      <section className="app-header panel">
-        <div className="app-identity">
-          {/* 見出しが製品名を読み上げるので、アイコンは装飾として alt を空にする */}
-          <img className="app-logo" src={appIconUrl} alt="" width={56} height={56} />
-          <div className="app-identity-text">
-            <h1>StorageSlim</h1>
-            <p className="app-tagline">画像最適化ワークベンチ</p>
-          </div>
-        </div>
-        {appVersion ? <span className="app-version">v{appVersion}</span> : null}
-      </section>
+      <AppHeader iconUrl={appIconUrl} tagline="画像最適化ワークベンチ" version={appVersion} />
 
       <section className="app-grid">
         <aside className="panel settings-panel">
@@ -1448,25 +1140,13 @@ function App() {
               <p className="title-note">ファイル / フォルダはこの画面へドラッグ&ドロップでも追加できます</p>
             </div>
             <div className="run-panel">
-              <div className="progress-panel">
-                <div className="progress-inline-meta">
-                  <div className="progress-summary">
-                    <strong>
-                      {progress.completed} / {progress.total}
-                    </strong>
-                    {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
-                  </div>
-                  <span title={progress.currentPath ?? undefined}>{progressLabel}</span>
-                </div>
-                <div className="progress-bar">
-                  <div
-                    className="progress-bar-fill"
-                    style={{
-                      width: progress.total === 0 ? "0%" : `${Math.round((progress.completed / progress.total) * 100)}%`,
-                    }}
-                  />
-                </div>
-              </div>
+              <ProgressPanel
+                completed={progress.completed}
+                total={progress.total}
+                failedCount={failedCount}
+                label={progressLabel}
+                currentPath={progress.currentPath}
+              />
               <div className="run-actions">
                 {busy ? (
                   <>
@@ -1497,62 +1177,39 @@ function App() {
           </div>
 
           <div className="path-grid">
-            <div className="field">
-              <div className="field-inline-head">
-                <span>入力先</span>
-                <button type="button" className="ghost micro-button" onClick={resetInputPath}>
-                  既定値へ戻す
-                </button>
-              </div>
-              <div className="inline-picker triple-line">
-                <input
-                  value={inputSourceDir}
-                  placeholder="入力先フォルダ"
-                  onChange={(event) => setInputSourceDir(event.currentTarget.value)}
-                />
-                <button type="button" className="ghost" onClick={pickInputFolder}>
-                  参照
-                </button>
-                <button type="button" className="ghost" disabled={inputLoading || busy} onClick={loadInputSourceDir}>
-                  読込
-                </button>
-              </div>
-            </div>
+            <PathPickerField
+              label="入力先"
+              value={inputSourceDir}
+              placeholder="入力先フォルダ"
+              onChange={setInputSourceDir}
+              onBrowse={pickInputFolder}
+              onReset={resetInputPath}
+              load={{ disabled: inputLoading || busy, onLoad: loadInputSourceDir }}
+            />
 
-            <div className="field">
-              <div className="field-inline-head">
-                <span>出力先</span>
-                <button type="button" className="ghost micro-button" onClick={resetOutputPath}>
-                  既定値へ戻す
-                </button>
-              </div>
-              <div className="inline-picker double-line">
-                <input
-                  value={settings.customOutputDir ?? ""}
-                  placeholder="出力先フォルダ"
-                  onChange={(event) => {
-                    const nextOutputDir = event.currentTarget.value;
-                    updateSettings((current) => ({
-                      ...current,
-                      outputMode: "custom",
-                      customOutputDir: nextOutputDir,
-                    }));
-                  }}
-                />
-                <button type="button" className="ghost" onClick={pickOutputFolder}>
-                  参照
-                </button>
-              </div>
-            </div>
+            <PathPickerField
+              label="出力先"
+              value={settings.customOutputDir ?? ""}
+              placeholder="出力先フォルダ"
+              onChange={(nextOutputDir) =>
+                updateSettings((current) => ({
+                  ...current,
+                  outputMode: "custom",
+                  customOutputDir: nextOutputDir,
+                }))
+              }
+              onBrowse={pickOutputFolder}
+              onReset={resetOutputPath}
+            />
           </div>
 
           <div className="workspace-grid">
-            <section className={`subpanel ${entries.length === 0 ? "is-empty" : "has-rows"} ${inputLoading ? "is-loading" : ""}`}>
-              <div className="subpanel-header">
-                <div className="title-inline">
-                  <h3>入力一覧</h3>
-                  <span>{entries.length} 件</span>
-                </div>
+            <TablePanel
+              title="入力一覧"
+              count={entries.length}
+              empty={entries.length === 0}
+              loading={inputLoading}
+              actions={
                 <div className="subpanel-actions">
                   <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFiles}>
                     ファイル追加
@@ -1569,31 +1226,11 @@ function App() {
                     入力をクリア
                   </button>
                 </div>
-              </div>
-              {inputLoading ? (
-                <div className="inline-loading" role="status" aria-live="polite">
-                  <span className="loading-dot" />
-                  <span>入力ファイルを読込中...</span>
-                  <div className="loading-track">
-                    <div className="loading-track-fill" />
-                  </div>
-                </div>
-              ) : null}
-              {skipped.length > 0 ? (
-                <details className="skip-details" open>
-                  <summary>読み込めなかった項目: {skipped.length} 件</summary>
-                  <div className="skip-list">
-                    {skipped.map((item) => (
-                      <div key={`${item.path}-${item.reason}`} className="skip-item">
-                        <strong>{item.path.split(/[\\/]/).pop()}</strong>
-                        <small>{item.path}</small>
-                        <p>{item.reason}</p>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              ) : null}
-              <div className={`table-scroll ${entries.length === 0 ? "is-empty" : "has-rows"}`}>
+              }
+            >
+              {inputLoading ? <InlineLoading message="入力ファイルを読込中..." /> : null}
+              <SkippedList items={skipped} />
+              <TableScroll empty={entries.length === 0}>
                 <table className="data-table">
                   <thead>
                     <tr>
@@ -1662,14 +1299,15 @@ function App() {
                     )}
                   </tbody>
                 </table>
-              </div>
-            </section>
+              </TableScroll>
+            </TablePanel>
 
-            <section className={`subpanel ${results.length === 0 ? "is-empty" : "has-rows"}`}>
-              <div className="subpanel-header">
-                <div className="title-inline">
-                  <h3>結果</h3>
-                  <span>{results.length} 件</span>
+            <TablePanel
+              title="結果"
+              count={results.length}
+              empty={results.length === 0}
+              summary={
+                <>
                   <span className={`saved-inline${totalSaved < 0 ? " size-increased" : ""}`}>
                     {totalSaved < 0 ? `増加: ${formatBytes(-totalSaved)}` : `Saved: ${formatBytes(totalSaved)}`}
                     {totalSavedPercent != null && totalSavedPercent !== 0
@@ -1677,7 +1315,9 @@ function App() {
                       : ""}
                   </span>
                   {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
-                </div>
+                </>
+              }
+              actions={
                 <button
                   type="button"
                   className="ghost panel-action"
@@ -1686,8 +1326,9 @@ function App() {
                 >
                   結果をクリア
                 </button>
-              </div>
-              <div className={`table-scroll ${results.length === 0 ? "is-empty" : "has-rows"}`}>
+              }
+            >
+              <TableScroll empty={results.length === 0}>
                 <table className="data-table">
                   <thead>
                     <tr>
@@ -1755,8 +1396,8 @@ function App() {
                     )}
                   </tbody>
                 </table>
-              </div>
-            </section>
+              </TableScroll>
+            </TablePanel>
           </div>
 
           {errorMessage ? <div className="notice danger">{errorMessage}</div> : null}
