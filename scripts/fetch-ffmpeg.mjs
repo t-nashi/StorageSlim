@@ -9,7 +9,7 @@
 // バージョン・configure オプション・同一リビジョンのソース入手先を記載すること。
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, renameSync, rmSync, copyFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -74,7 +74,6 @@ if (process.platform === "win32") {
 }
 
 // 展開先は ffmpeg-master-latest-win64-lgpl/bin/ の下。
-const { readdirSync } = await import("node:fs");
 const extracted = readdirSync(work).find((name) => name.startsWith("ffmpeg-") && !name.endsWith(".zip"));
 if (!extracted) {
   fail("展開結果が見つかりませんでした。");
@@ -90,6 +89,32 @@ for (const tool of ["ffmpeg", "ffprobe"]) {
   renameSync(from, to);
   console.log(`[fetch-ffmpeg] placed ${to}`);
 }
+
+// LGPL はライセンス文の同梱を求める。アーカイブ同梱のものをそのまま置く。
+const licenseNames = readdirSync(join(work, extracted)).filter((name) => /^(LICENSE|COPYING)/i.test(name));
+if (licenseNames.length === 0) {
+  fail("アーカイブにライセンス文が見つかりませんでした。同梱できないため中断します。");
+}
+for (const name of licenseNames) {
+  copyFileSync(join(work, extracted, name), join(DEST_DIR, `FFMPEG-${name.toUpperCase().replace(/\.TXT$/, "")}.txt`));
+  console.log(`[fetch-ffmpeg] placed FFMPEG-${name.toUpperCase().replace(/\.TXT$/, "")}.txt`);
+}
+
+// LGPL v3 は GPL v3 の条文を参照しているため、そちらも同梱する。
+// アーカイブには LGPL の本文しか入っていない。
+// gnu.org は環境によって到達できないため、FFmpeg 本体が同梱している同じ本文を使う。
+const GPL3_URL = "https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/COPYING.GPLv3";
+console.log(`[fetch-ffmpeg] downloading ${GPL3_URL}`);
+const gpl = await fetch(GPL3_URL, { redirect: "follow" });
+if (!gpl.ok) {
+  fail(`GPL v3 本文の取得に失敗しました: HTTP ${gpl.status}`);
+}
+const gplText = await gpl.text();
+if (!gplText.includes("GNU GENERAL PUBLIC LICENSE")) {
+  fail("GPL v3 本文の内容が想定と違います。");
+}
+writeFileSync(join(DEST_DIR, "FFMPEG-GPL-3.0.txt"), gplText);
+console.log("[fetch-ffmpeg] placed FFMPEG-GPL-3.0.txt");
 
 // ライセンス表記に必要な情報を残す。
 const version = execFileSync(join(DEST_DIR, `ffmpeg-${target.triple}${target.exe}`), ["-version"], {
@@ -107,3 +132,6 @@ if (version.includes("--enable-gpl")) {
 }
 
 console.log("[fetch-ffmpeg] done");
+console.log(
+  "[fetch-ffmpeg] 配布時は THIRD-PARTY-NOTICES.md の FFmpeg の節を、FFMPEG-BUILD-INFO.txt の内容と合わせて確認してください。",
+);

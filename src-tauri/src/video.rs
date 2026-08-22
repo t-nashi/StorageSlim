@@ -5,12 +5,12 @@
 //! `-progress pipe:1` で進捗が取れ、stdin へ `q` を送って正常終了させられる。
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::Ordering,
+    sync::{atomic::Ordering, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -336,15 +336,75 @@ impl RateControl {
     }
 }
 
-fn pick_encoder(
+/// ビルドに含まれている候補を優先順に並べる。
+fn candidate_order(
     format: VideoOutputFormat,
     encoders: &HashSet<String>,
-) -> Option<(&'static str, RateControl)> {
+) -> Vec<(&'static str, RateControl)> {
     format
         .candidates()
         .iter()
-        .find(|(name, _)| encoders.contains(*name))
+        .filter(|(name, _)| encoders.contains(*name))
         .map(|(name, rate)| (*name, *rate))
+        .collect()
+}
+
+fn encoder_cache() -> &'static Mutex<HashMap<String, bool>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// エンコーダがこの環境で実際に動くか確かめる。
+///
+/// 「ビルドに含まれている」ことと「動く」ことは別問題。LGPL ビルドには
+/// `h264_nvenc` / `h264_qsv` / `h264_amf` がすべて含まれるが、対応する GPU が
+/// なければ初期化に失敗する。`-encoders` の一覧だけで選ぶと、多くの環境で
+/// 毎回エンコードに失敗することになるため、1 フレームだけ試す。
+fn encoder_works(ffmpeg: &Path, encoder: &str) -> bool {
+    let key = format!("{}::{}", ffmpeg.display(), encoder);
+    if let Some(cached) = encoder_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&key).copied())
+    {
+        return cached;
+    }
+
+    let works = command(ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=256x144:d=0.1",
+            "-frames:v",
+            "1",
+            "-c:v",
+            encoder,
+            "-f",
+            "null",
+            "-",
+        ])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    if let Ok(mut cache) = encoder_cache().lock() {
+        cache.insert(key, works);
+    }
+    works
+}
+
+/// 実際に動く候補のうち、最も優先度の高いものを選ぶ。
+fn pick_encoder(
+    format: VideoOutputFormat,
+    tools: &FfmpegTools,
+) -> Option<(&'static str, RateControl)> {
+    candidate_order(format, &tools.encoders)
+        .into_iter()
+        .find(|(name, _)| encoder_works(&tools.ffmpeg, name))
 }
 
 /// CRF 指定のオプションはエンコーダごとに形が違う。
@@ -527,12 +587,23 @@ fn format_support(tools: &FfmpegTools) -> Vec<VideoFormatSupport> {
     OUTPUT_FORMATS
         .iter()
         .map(|(format, name)| {
-            let picked = pick_encoder(*format, &tools.encoders);
+            let picked = pick_encoder(*format, tools);
             let audio = audio_encoder(*format, &tools.encoders);
+            let present = candidate_order(*format, &tools.encoders);
             let message = match (&picked, &audio) {
-                (None, _) => Some(format!(
+                (None, _) if present.is_empty() => Some(format!(
                     "この FFmpeg には {} 用のエンコーダがありません。",
                     format.video_codec_name().to_uppercase()
+                )),
+                // 候補はあるが、対応するハードウェアが無いなどで初期化できない。
+                (None, _) => Some(format!(
+                    "{} 用のエンコーダ（{}）はこの環境では利用できません。",
+                    format.video_codec_name().to_uppercase(),
+                    present
+                        .iter()
+                        .map(|(name, _)| *name)
+                        .collect::<Vec<_>>()
+                        .join(" / ")
                 )),
                 (_, Err(error)) => Some(format!("{error:#}")),
                 _ => None,
@@ -994,15 +1065,11 @@ fn build_encode_plan(
     entry: &VideoInputEntry,
     settings: &VideoSettings,
     tools: &FfmpegTools,
+    encoder: &'static str,
+    rate: RateControl,
     output: &Path,
 ) -> Result<EncodePlan> {
     let format = settings.output_format;
-    let (encoder, rate) = pick_encoder(format, &tools.encoders).ok_or_else(|| {
-        anyhow!(
-            "この FFmpeg には {} 用のエンコーダがありません。",
-            format.video_codec_name().to_uppercase()
-        )
-    })?;
 
     let mut warnings = Vec::new();
     let mut args: Vec<String> = vec![
@@ -1341,6 +1408,14 @@ fn process_impl(
     control: BatchControl,
 ) -> Result<VideoProcessResponse> {
     let tools = resolve_tools(request.settings.ffmpeg_path.as_deref())?;
+    // エンコーダの確認はプロセス起動を伴うので、バッチの先頭で 1 回だけ行う。
+    let format = request.settings.output_format;
+    let (encoder, rate) = pick_encoder(format, &tools).ok_or_else(|| {
+        anyhow!(
+            "{} 用のエンコーダがこの環境では利用できません。",
+            format.video_codec_name().to_uppercase()
+        )
+    })?;
     let output_root = resolve_output_root(&request.settings)?;
     fs::create_dir_all(&output_root)
         .with_context(|| format!("failed to create output root: {}", output_root.display()))?;
@@ -1376,6 +1451,8 @@ fn process_impl(
                 &tools,
                 entry,
                 &request.settings,
+                encoder,
+                rate,
                 &output_root,
                 index,
                 total,
@@ -1440,6 +1517,8 @@ fn process_one(
     tools: &FfmpegTools,
     entry: &VideoInputEntry,
     settings: &VideoSettings,
+    encoder: &'static str,
+    rate: RateControl,
     output_root: &Path,
     index: usize,
     total: usize,
@@ -1463,7 +1542,7 @@ fn process_one(
         let _ = fs::remove_file(&temp_path);
     }
 
-    let plan = build_encode_plan(entry, settings, tools, &temp_path)?;
+    let plan = build_encode_plan(entry, settings, tools, encoder, rate, &temp_path)?;
     let outcome = run_ffmpeg(window, control, tools, &plan, entry, index, total);
 
     let outcome = match outcome {
@@ -1735,17 +1814,17 @@ mod tests {
         let mut encoders = HashSet::new();
         encoders.insert("h264_mf".to_string());
         assert_eq!(
-            pick_encoder(VideoOutputFormat::Mp4H264, &encoders),
+            candidate_order(VideoOutputFormat::Mp4H264, &encoders).first().copied(),
             Some(("h264_mf", RateControl::Bitrate))
         );
 
         encoders.insert("libx264".to_string());
         assert_eq!(
-            pick_encoder(VideoOutputFormat::Mp4H264, &encoders),
+            candidate_order(VideoOutputFormat::Mp4H264, &encoders).first().copied(),
             Some(("libx264", RateControl::Crf))
         );
 
-        assert_eq!(pick_encoder(VideoOutputFormat::Mp4H264, &HashSet::new()), None);
+        assert!(candidate_order(VideoOutputFormat::Mp4H264, &HashSet::new()).is_empty());
     }
 
     /// VP9 と H.264 でエンコーダ候補が混ざらないこと。
@@ -1753,13 +1832,30 @@ mod tests {
     fn encoder_choice_is_per_output_format() {
         let mut encoders = HashSet::new();
         encoders.insert("libx264".to_string());
-        assert_eq!(pick_encoder(VideoOutputFormat::WebmVp9, &encoders), None);
+        assert!(candidate_order(VideoOutputFormat::WebmVp9, &encoders).is_empty());
 
         encoders.insert("libvpx-vp9".to_string());
         assert_eq!(
-            pick_encoder(VideoOutputFormat::WebmVp9, &encoders),
+            candidate_order(VideoOutputFormat::WebmVp9, &encoders).first().copied(),
             Some(("libvpx-vp9", RateControl::Crf))
         );
+    }
+
+    /// ハードウェアが無い環境向けに、候補は複数残しておく。
+    /// 1 つしか候補がないと、その環境では H.264 が一切出せなくなる。
+    #[test]
+    fn hardware_candidates_have_software_fallbacks() {
+        let names: Vec<&str> = VideoOutputFormat::Mp4H264
+            .candidates()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(names.contains(&"h264_mf"), "{names:?}");
+        assert!(names.contains(&"libopenh264"), "{names:?}");
+        // ハードウェア依存のものより後ろにあること。
+        let mf = names.iter().position(|name| *name == "h264_mf").unwrap();
+        let nvenc = names.iter().position(|name| *name == "h264_nvenc").unwrap();
+        assert!(nvenc < mf, "{names:?}");
     }
 
     /// libvpx は -b:v 0 を併記しないと CRF が効かない。

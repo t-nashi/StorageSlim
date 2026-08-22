@@ -5,9 +5,27 @@ StorageSlim は以下のオープンソースソフトウェアを利用して�
 
 このファイルは `node scripts/generate-notices.mjs` で自動生成しています。手で編集せず、依存を変更したら生成し直してください。
 
+- 同梱バイナリ: FFmpeg (LGPL v3)
 - Rust クレート: 311 件
 - npm パッケージ: 7 件
 - 収録しているライセンス条文: 183 種
+
+## 同梱バイナリ: FFmpeg
+
+動画圧縮モードは FFmpeg を外部プロセスとして呼び出します。ライブラリとしてリンクはしていません。
+
+- 名称: FFmpeg (ffmpeg / ffprobe)
+- ライセンス: LGPL v3 以降（`--enable-version3` を含む構成のため。LGPL v3 は GPL v3 の条文を参照します）
+- GPL 構成ではありません。`libx264` / `libx265` は含みません（`--disable-libx264 --disable-libx265`）
+- 取得元: https://github.com/BtbN/FFmpeg-Builds （`ffmpeg-master-latest-win64-lgpl`）
+- 対応ソース: https://github.com/BtbN/FFmpeg-Builds および https://git.ffmpeg.org/ffmpeg.git （同梱バイナリのバージョンは配布物内の `FFMPEG-BUILD-INFO.txt` を参照）
+- ライセンス全文: 配布物内の `FFMPEG-LICENSE.txt`（LGPL v3）と `FFMPEG-GPL-3.0.txt`（GPL v3）
+- ビルド構成: 配布物内の `FFMPEG-BUILD-INFO.txt`（`ffmpeg -version` の configure 行）
+
+FFmpeg は別プロセスとして呼び出す独立した実行ファイルです。差し替えたい場合は、
+アプリの設定にある `ffmpeg のパス` へ任意のビルドを指定できます。
+
+StorageSlim 本体のライセンスは MIT です（`LICENSE`）。
 
 ## Rust クレート
 
