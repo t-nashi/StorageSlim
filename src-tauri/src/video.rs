@@ -1332,9 +1332,17 @@ fn process_one(
         })?;
         warnings.push("再圧縮すると大きくなるため、元のファイルをコピーしました".to_string());
     } else {
-        fs::rename(&temp_path, &output_path).with_context(|| {
-            format!("failed to finalize output: {}", output_path.display())
-        })?;
+        // Windows の rename は宛先があると失敗するため、上書き時は先に消す。
+        if output_path.exists() {
+            fs::remove_file(&output_path).with_context(|| {
+                format!("failed to replace existing output: {}", output_path.display())
+            })?;
+        }
+        if let Err(error) = fs::rename(&temp_path, &output_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(anyhow!(error)
+                .context(format!("failed to finalize output: {}", output_path.display())));
+        }
     }
 
     let final_size = fs::metadata(&output_path)?.len();
@@ -1386,4 +1394,202 @@ fn output_dimensions(tools: &FfmpegTools, path: &Path) -> Option<(Option<u32>, O
         stream.get("width").and_then(Value::as_u64).map(|v| v as u32),
         stream.get("height").and_then(Value::as_u64).map(|v| v as u32),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(width: u32, height: u32, fps: f64) -> VideoInputEntry {
+        VideoInputEntry {
+            id: "id".into(),
+            source_path: "input.mp4".into(),
+            root_path: ".".into(),
+            relative_path: "input.mp4".into(),
+            file_name: "input.mp4".into(),
+            format_label: "MP4 / h264".into(),
+            video_codec: "h264".into(),
+            audio_codec: Some("aac".into()),
+            file_size: 1_000_000,
+            width: Some(width),
+            height: Some(height),
+            duration_sec: Some(60.0),
+            fps: Some(fps),
+            variable_frame_rate: false,
+            bit_rate: Some(4_000_000),
+            rotation: None,
+            has_audio: true,
+            audio_track_count: 1,
+            subtitle_track_count: 0,
+            hdr: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn settings() -> VideoSettings {
+        VideoSettings {
+            output_format: VideoOutputFormat::Mp4H264,
+            output_mode: OutputMode::Custom,
+            custom_output_dir: Some("out".into()),
+            overwrite: false,
+            resize: ResizeSettings {
+                mode: ResizeMode::None,
+                value: None,
+                unit: ResizeUnit::Px,
+            },
+            quality_preset: QualityPreset::Standard,
+            crf_override: None,
+            fps_limit: None,
+            audio_mode: AudioMode::Copy,
+            audio_bitrate_kbps: 128,
+            metadata_mode: MetadataMode::Strip,
+            timestamps: TimestampSettings {
+                preserve_creation_time: false,
+                preserve_last_write_time: false,
+            },
+            ffmpeg_path: None,
+        }
+    }
+
+    /// リサイズなしでも偶数へ丸める式を出す。奇数寸法の入力で yuv420p が失敗するため。
+    #[test]
+    fn scale_filter_forces_even_dimensions_without_resize() {
+        let filter = scale_filter(&settings().resize);
+        assert!(filter.contains("trunc(iw/2)*2"), "{filter}");
+        assert!(filter.contains("trunc(ih/2)*2"), "{filter}");
+    }
+
+    /// px 指定は min() で抑えるため、拡大にはならない。
+    #[test]
+    fn scale_filter_never_upscales() {
+        let mut resize = settings().resize;
+        resize.mode = ResizeMode::Width;
+        resize.value = Some(640);
+        assert_eq!(
+            scale_filter(&resize),
+            "scale=w='trunc(min(iw,640)/2)*2':h=-2"
+        );
+    }
+
+    /// 長辺指定は縦横のどちらが長いかを ffmpeg 側で判定させる。
+    /// 回転メタデータつきの動画では、Rust 側の寸法と表示寸法が入れ替わるため。
+    #[test]
+    fn scale_filter_long_edge_branches_on_orientation() {
+        let mut resize = settings().resize;
+        resize.mode = ResizeMode::LongEdge;
+        resize.value = Some(1080);
+        let filter = scale_filter(&resize);
+        assert!(filter.contains("if(gte(iw,ih)"), "{filter}");
+        assert!(filter.contains("min(iw,1080)"), "{filter}");
+        assert!(filter.contains("min(ih,1080)"), "{filter}");
+    }
+
+    /// % 指定は基準に関係なく一様縮小。100 を超える値は受け付けない。
+    #[test]
+    fn scale_filter_percent_is_capped_at_100() {
+        let mut resize = settings().resize;
+        resize.mode = ResizeMode::LongEdge;
+        resize.unit = ResizeUnit::Percent;
+        resize.value = Some(150);
+        assert_eq!(scale_filter(&resize), "scale=w='trunc(iw*100/200)*2':h=-2");
+    }
+
+    /// 入力より高い fps は指定しない。フレーム複製で太るだけになる。
+    #[test]
+    fn video_filter_skips_fps_when_source_is_slower() {
+        let mut config = settings();
+        config.fps_limit = Some(60);
+        let filter = video_filter(&entry(1920, 1080, 30.0), &config);
+        assert!(!filter.contains("fps="), "{filter}");
+
+        config.fps_limit = Some(24);
+        let filter = video_filter(&entry(1920, 1080, 30.0), &config);
+        assert!(filter.starts_with("fps=24,"), "{filter}");
+    }
+
+    /// 可変フレームレートは、上限指定がなくても平均レートで固定化する。
+    #[test]
+    fn video_filter_pins_variable_frame_rate() {
+        let mut source = entry(1280, 720, 29.97);
+        source.variable_frame_rate = true;
+        let filter = video_filter(&source, &settings());
+        assert!(filter.starts_with("fps=29.970,"), "{filter}");
+    }
+
+    /// 回転つきの動画では、ビットレート見積りに表示寸法を使う。
+    #[test]
+    fn bitrate_uses_display_dimensions_for_rotated_input() {
+        let mut source = entry(1920, 1080, 30.0);
+        let upright = target_bitrate_kbps(&source, &settings());
+        source.rotation = Some(90);
+        let rotated = target_bitrate_kbps(&source, &settings());
+        // 縦横が入れ替わってもピクセル数は同じなので、見積りは変わらない。
+        assert_eq!(upright, rotated);
+    }
+
+    /// 品質プリセットが下がるほどビットレートも下がる。
+    #[test]
+    fn bitrate_follows_quality_preset() {
+        let source = entry(1920, 1080, 30.0);
+        let mut config = settings();
+        config.quality_preset = QualityPreset::High;
+        let high = target_bitrate_kbps(&source, &config);
+        config.quality_preset = QualityPreset::Smallest;
+        let smallest = target_bitrate_kbps(&source, &config);
+        assert!(high > smallest, "high={high} smallest={smallest}");
+    }
+
+    /// リサイズすると見積りも下がる。
+    #[test]
+    fn bitrate_drops_when_resized() {
+        let source = entry(1920, 1080, 30.0);
+        let mut config = settings();
+        let full = target_bitrate_kbps(&source, &config);
+        config.resize.mode = ResizeMode::LongEdge;
+        config.resize.value = Some(960);
+        let half = target_bitrate_kbps(&source, &config);
+        assert!(half < full, "full={full} half={half}");
+    }
+
+    /// libx264 があれば CRF、なければビットレート指定になる。
+    #[test]
+    fn encoder_choice_prefers_crf_capable_encoder() {
+        let mut encoders = HashSet::new();
+        encoders.insert("h264_mf".to_string());
+        assert_eq!(pick_h264(&encoders), Some(("h264_mf", RateControl::Bitrate)));
+
+        encoders.insert("libx264".to_string());
+        assert_eq!(pick_h264(&encoders), Some(("libx264", RateControl::Crf)));
+
+        assert_eq!(pick_h264(&HashSet::new()), None);
+    }
+
+    /// 分数表記の fps を読めること。0 除算で落ちないこと。
+    #[test]
+    fn parses_frame_rate_fractions() {
+        assert_eq!(parse_rational(Some("30/1")), Some(30.0));
+        assert!((parse_rational(Some("30000/1001")).unwrap() - 29.97).abs() < 0.01);
+        assert_eq!(parse_rational(Some("0/0")), None);
+        assert_eq!(parse_rational(None), None);
+    }
+
+    /// 元コピーへのフォールバックは、何も変えない指定のときだけ。
+    #[test]
+    fn source_copy_only_when_nothing_changes() {
+        let source = entry(1920, 1080, 30.0);
+        let mut config = settings();
+        assert!(is_passthrough_request(&source, &config));
+
+        config.resize.mode = ResizeMode::Width;
+        config.resize.value = Some(1280);
+        assert!(!is_passthrough_request(&source, &config));
+
+        config = settings();
+        config.fps_limit = Some(24);
+        assert!(!is_passthrough_request(&source, &config));
+
+        config = settings();
+        config.audio_mode = AudioMode::Aac;
+        assert!(!is_passthrough_request(&source, &config));
+    }
 }
