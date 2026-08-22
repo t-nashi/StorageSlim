@@ -144,13 +144,19 @@ export type AppMode = "image" | "video";
 // 動画圧縮モード
 // ---------------------------------------------------------------------------
 
-/** Phase 1 の出力は MP4 (H.264 + AAC) のみ。 */
-export type VideoOutputFormat = "mp4H264";
+/**
+ * 動画の出力形式。
+ *
+ * `mp4H264` は互換性重視の既定。`webmVp9` は同じ体感画質で小さくなるが、
+ * エンコードは遅く、再生できないアプリもある。
+ */
+export type VideoOutputFormat = "mp4H264" | "webmVp9";
 
 /** 品質はプリセット主体（`D-19`）。CRF は詳細指定でのみ開放する。 */
 export type VideoQualityPreset = "high" | "standard" | "small" | "smallest";
 
-export type VideoAudioMode = "copy" | "aac" | "remove";
+/** `reencode` はコンテナに合うコデックへ変換する。MP4 は AAC、WebM は Opus。 */
+export type VideoAudioMode = "copy" | "reencode" | "remove";
 
 export interface VideoSettings {
   outputFormat: VideoOutputFormat;
@@ -223,6 +229,18 @@ export interface VideoProcessResponse {
   results: VideoResultItem[];
 }
 
+/** 出力形式ごとの利用可否。使える FFmpeg のビルドによって変わる。 */
+export interface VideoFormatSupport {
+  format: VideoOutputFormat;
+  available: boolean;
+  encoder: string | null;
+  /** "crf" | "bitrate" */
+  rateControl: string | null;
+  /** CRF の上限。H.264 は 51、VP9 は 63。 */
+  crfMax: number;
+  message: string | null;
+}
+
 /** 起動時に確認する FFmpeg の利用可否。 */
 export interface VideoEnvironment {
   available: boolean;
@@ -231,8 +249,6 @@ export interface VideoEnvironment {
   version: string | null;
   /** "setting" | "bundled" | "path" */
   source: string | null;
-  videoEncoder: string | null;
-  /** "crf" | "bitrate" */
-  rateControl: string | null;
+  formats: VideoFormatSupport[];
   message: string | null;
 }

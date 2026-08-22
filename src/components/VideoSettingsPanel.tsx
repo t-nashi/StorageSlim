@@ -11,12 +11,14 @@ import {
 import type {
   VideoAudioMode,
   VideoEnvironment,
+  VideoOutputFormat,
   VideoQualityPreset,
   VideoSettings,
 } from "../types";
 
-const outputFormatOptions: Array<ChoiceOption<VideoSettings["outputFormat"]>> = [
+const outputFormatLabels: Array<{ value: VideoOutputFormat; label: string }> = [
   { value: "mp4H264", label: "MP4 (H.264)" },
+  { value: "webmVp9", label: "WebM (VP9)" },
 ];
 
 const qualityOptions: Array<ChoiceOption<VideoQualityPreset>> = [
@@ -26,11 +28,14 @@ const qualityOptions: Array<ChoiceOption<VideoQualityPreset>> = [
   { value: "smallest", label: "最小" },
 ];
 
-const audioOptions: Array<ChoiceOption<VideoAudioMode>> = [
-  { value: "copy", label: "そのままコピー" },
-  { value: "aac", label: "AAC で再エンコード" },
-  { value: "remove", label: "削除" },
-];
+/** 再エンコード先はコンテナで決まるため、ラベルも出力形式に合わせる。 */
+function audioOptions(format: VideoOutputFormat): Array<ChoiceOption<VideoAudioMode>> {
+  return [
+    { value: "copy", label: "そのままコピー" },
+    { value: "reencode", label: format === "webmVp9" ? "Opus で再エンコード" : "AAC で再エンコード" },
+    { value: "remove", label: "削除" },
+  ];
+}
 
 const audioBitrateOptions: Array<ChoiceOption<string>> = [
   { value: "96", label: "96k" },
@@ -53,12 +58,19 @@ const BITS_PER_PIXEL: Record<VideoQualityPreset, number> = {
   smallest: 0.03,
 };
 
-/** CRF 対応エンコーダ向けの値。Rust 側の QualityPreset と一致させること。 */
-const PRESET_CRF: Record<VideoQualityPreset, number> = {
-  high: 18,
-  standard: 23,
-  small: 28,
-  smallest: 32,
+/** ビットレートの形式別係数。Rust 側の bitrate_scale と一致させること。 */
+const BITRATE_SCALE: Record<VideoOutputFormat, number> = {
+  mp4H264: 1.0,
+  webmVp9: 0.65,
+};
+
+/**
+ * CRF はコデックごとに実用レンジが違う。同じ数値でも意味が変わるため、
+ * 表示にも出力形式を反映させる。Rust 側の VideoOutputFormat::crf と一致させること。
+ */
+const PRESET_CRF: Record<VideoOutputFormat, Record<VideoQualityPreset, number>> = {
+  mp4H264: { high: 18, standard: 23, small: 28, smallest: 32 },
+  webmVp9: { high: 28, standard: 33, small: 38, smallest: 43 },
 };
 
 /**
@@ -67,8 +79,8 @@ const PRESET_CRF: Record<VideoQualityPreset, number> = {
  * 動画は結果サイズの予測が画像より難しく、目安がないとプリセットを選べない
  * （`docs/decision-log.md` の `D-19`）。実際の値は素材で大きく変わる。
  */
-function estimatedMbPerMinute(preset: VideoQualityPreset): number {
-  const bitsPerSecond = 1920 * 1080 * 30 * BITS_PER_PIXEL[preset];
+function estimatedMbPerMinute(preset: VideoQualityPreset, format: VideoOutputFormat): number {
+  const bitsPerSecond = 1920 * 1080 * 30 * BITS_PER_PIXEL[preset] * BITRATE_SCALE[format];
   return (bitsPerSecond * 60) / 8 / 1_000_000;
 }
 
@@ -90,7 +102,20 @@ export function VideoSettingsPanel({
   const resizeValueDisabled = settings.resize.mode === "none";
   const resizeValueMax = resizeValueMaxFor(settings.resize.unit);
   const resizeValueMissing = isResizeValueMissing(settings.resize);
-  const crfSupported = environment?.rateControl === "crf";
+  const support = environment?.formats.find((entry) => entry.format === settings.outputFormat) ?? null;
+  const crfSupported = support?.rateControl === "crf";
+  const crfMax = support?.crfMax ?? 51;
+  const outputFormatOptions: Array<ChoiceOption<VideoOutputFormat>> = outputFormatLabels.map((option) => {
+    const entry = environment?.formats.find((item) => item.format === option.value);
+    // 環境を確認できるまでは選択させる。確認後に使えないものだけ落とす。
+    const unavailable = environment != null && entry?.available !== true;
+    return {
+      value: option.value,
+      label: option.label,
+      disabled: unavailable,
+      title: unavailable ? (entry?.message ?? "この FFmpeg では使えません") : undefined,
+    };
+  });
 
   return (
     <aside className="panel settings-panel">
@@ -109,8 +134,20 @@ export function VideoSettingsPanel({
           <ChoiceGroup
             value={settings.outputFormat}
             options={outputFormatOptions}
-            onChange={(outputFormat) => updateSettings((current) => ({ ...current, outputFormat }))}
+            onChange={(outputFormat) =>
+              updateSettings((current) => ({
+                ...current,
+                outputFormat,
+                // CRF の実用レンジがコデックで変わるため、形式を変えたら手動指定は捨てる。
+                crfOverride: null,
+              }))
+            }
           />
+          {settings.outputFormat === "webmVp9" ? (
+            <small className="field-note">
+              MP4 より小さくなりますが、エンコードは遅く、再生できないアプリもあります。
+            </small>
+          ) : null}
         </div>
 
         <div className="field setting-resize-mode">
@@ -188,8 +225,11 @@ export function VideoSettingsPanel({
             onChange={(qualityPreset) => updateSettings((current) => ({ ...current, qualityPreset }))}
           />
           <small className="field-note">
-            目安: 1080p30 で 1 分あたり約 {estimatedMbPerMinute(settings.qualityPreset).toFixed(0)} MB
-            {crfSupported ? `（CRF ${PRESET_CRF[settings.qualityPreset]} 相当）` : "（ビットレート指定）"}
+            目安: 1080p30 で 1 分あたり約{" "}
+            {estimatedMbPerMinute(settings.qualityPreset, settings.outputFormat).toFixed(0)} MB
+            {crfSupported
+              ? `（CRF ${PRESET_CRF[settings.outputFormat][settings.qualityPreset]} 相当）`
+              : "（ビットレート指定）"}
           </small>
         </div>
 
@@ -212,10 +252,10 @@ export function VideoSettingsPanel({
           <span>音声</span>
           <ChoiceGroup
             value={settings.audioMode}
-            options={audioOptions}
+            options={audioOptions(settings.outputFormat)}
             onChange={(audioMode) => updateSettings((current) => ({ ...current, audioMode }))}
           />
-          {settings.audioMode === "aac" ? (
+          {settings.audioMode === "reencode" ? (
             <ChoiceGroup
               value={String(settings.audioBitrateKbps)}
               options={audioBitrateOptions}
@@ -306,7 +346,7 @@ export function VideoSettingsPanel({
                 type="number"
                 inputMode="numeric"
                 min={0}
-                max={51}
+                max={crfMax}
                 disabled={!crfSupported}
                 value={settings.crfOverride ?? ""}
                 placeholder="プリセット"
@@ -322,15 +362,15 @@ export function VideoSettingsPanel({
                   }
                   updateSettings((current) => ({
                     ...current,
-                    crfOverride: clamp(Math.round(parsed), 0, 51),
+                    crfOverride: clamp(Math.round(parsed), 0, crfMax),
                   }));
                 }}
               />
               <span className="decode-limit-unit">CRF</span>
               <small className="decode-limit-hint">
                 {crfSupported
-                  ? "空欄でプリセットに従う。小さいほど高品質 (0-51)"
-                  : `${environment?.videoEncoder ?? "選択中のエンコーダ"} は CRF 指定に対応しないため無効です`}
+                  ? `空欄でプリセットに従う。小さいほど高品質 (0-${crfMax})`
+                  : `${support?.encoder ?? "選択中のエンコーダ"} は CRF 指定に対応しないため無効です`}
               </small>
             </div>
 
@@ -358,7 +398,7 @@ export function VideoSettingsPanel({
               />
               <small className="field-note">
                 {environment?.available
-                  ? `${environment.version ?? "ffmpeg"} / エンコーダ ${environment.videoEncoder} (${environment.source})`
+                  ? `${environment.version ?? "ffmpeg"} / エンコーダ ${support?.encoder ?? "-"} (${environment.source})`
                   : (environment?.message ?? "FFmpeg を確認しています...")}
               </small>
             </div>

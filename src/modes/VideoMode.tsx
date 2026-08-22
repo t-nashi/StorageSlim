@@ -81,12 +81,17 @@ function normalizeSettings(raw: unknown, defaultOutputDir: string): VideoSetting
       : fallback.qualityPreset;
 
   const audioMode =
-    candidate.audioMode === "copy" || candidate.audioMode === "aac" || candidate.audioMode === "remove"
+    candidate.audioMode === "copy" ||
+    candidate.audioMode === "reencode" ||
+    candidate.audioMode === "remove"
       ? candidate.audioMode
-      : fallback.audioMode;
+      : // 旧バージョンは "aac" を保存していた。意味は同じなので読み替える。
+        (candidate.audioMode as unknown) === "aac"
+        ? "reencode"
+        : fallback.audioMode;
 
   return {
-    outputFormat: "mp4H264",
+    outputFormat: candidate.outputFormat === "webmVp9" ? "webmVp9" : "mp4H264",
     outputMode: "custom",
     customOutputDir:
       typeof candidate.customOutputDir === "string" && candidate.customOutputDir.trim().length > 0
@@ -330,8 +335,7 @@ export function VideoMode({
             ffprobePath: null,
             version: null,
             source: null,
-            videoEncoder: null,
-            rateControl: null,
+            formats: [],
             message: error instanceof Error ? error.message : String(error),
           });
         }
@@ -379,7 +383,11 @@ export function VideoMode({
   const interruptedCount = useMemo(() => results.filter((result) => result.interrupted).length, [results]);
 
   const resizeValueMissing = settings ? isResizeValueMissing(settings.resize) : true;
-  const ffmpegReady = environment?.available === true;
+  // 出力形式ごとに使えるエンコーダが違うため、選択中の形式で判定する。
+  const formatSupport =
+    environment?.formats.find((entry) => entry.format === settings?.outputFormat) ?? null;
+  const ffmpegReady = environment?.available === true && formatSupport?.available === true;
+  const notReadyMessage = environment?.message ?? formatSupport?.message ?? null;
   const canRunBatch =
     entries.length > 0 && !busy && !inputLoading && !resizeValueMissing && ffmpegReady;
 
@@ -484,7 +492,7 @@ export function VideoMode({
       return;
     }
     if (!ffmpegReady) {
-      setErrorMessage(environment?.message ?? "FFmpeg が利用できません。");
+      setErrorMessage(notReadyMessage ?? "FFmpeg が利用できません。");
       return;
     }
     setBusy(true);
@@ -692,7 +700,7 @@ export function VideoMode({
 
           {!ffmpegReady ? (
             <div className="notice danger">
-              {environment?.message ?? "FFmpeg を確認しています..."}
+              {notReadyMessage ?? "FFmpeg を確認しています..."}
             </div>
           ) : null}
 

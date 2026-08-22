@@ -38,9 +38,6 @@ const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "m4v", "webm", "mkv", "avi", "wmv", "mts", "m2ts",
 ];
 
-/// コピーのまま MP4 に入れられる音声コデック。
-const MP4_AUDIO_PASSTHROUGH: &[&str] = &["aac", "mp3", "alac"];
-
 /// 長尺警告のしきい値。
 const LONG_DURATION_SEC: f64 = 20.0 * 60.0;
 
@@ -51,8 +48,121 @@ const LONG_DURATION_SEC: f64 = 20.0 * 60.0;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum VideoOutputFormat {
-    /// MP4 (H.264 + AAC)。Phase 1 の唯一の出力。
+    /// MP4 (H.264 + AAC)。互換性を最優先する既定の出力。
     Mp4H264,
+    /// WebM (VP9 + Opus)。同じ体感画質で MP4 より小さくなるが、エンコードは遅い。
+    WebmVp9,
+}
+
+impl VideoOutputFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            VideoOutputFormat::Mp4H264 => "mp4",
+            VideoOutputFormat::WebmVp9 => "webm",
+        }
+    }
+
+    /// `-f` に渡す muxer 名。一時ファイルが `*.part` で拡張子から推測できないため明示する。
+    fn muxer(self) -> &'static str {
+        match self {
+            VideoOutputFormat::Mp4H264 => "mp4",
+            VideoOutputFormat::WebmVp9 => "webm",
+        }
+    }
+
+    /// 再エンコードせずコピーできる入力コデック。元ファイルコピーの判定に使う。
+    fn video_codec_name(self) -> &'static str {
+        match self {
+            VideoOutputFormat::Mp4H264 => "h264",
+            VideoOutputFormat::WebmVp9 => "vp9",
+        }
+    }
+
+    /// 映像エンコーダの優先順。
+    ///
+    /// `D-18` により同梱ビルドは LGPL 構成で `libx264` を含まないため、H.264 では
+    /// 通常 OS / ハードウェアエンコーダが選ばれる。VP9 の `libvpx` は BSD なので
+    /// 同梱ビルドでもソフトウェアエンコーダが使える。
+    fn candidates(self) -> &'static [(&'static str, RateControl)] {
+        match self {
+            VideoOutputFormat::Mp4H264 => &[
+                ("libx264", RateControl::Crf),
+                ("h264_nvenc", RateControl::Bitrate),
+                ("h264_qsv", RateControl::Bitrate),
+                ("h264_amf", RateControl::Bitrate),
+                ("h264_videotoolbox", RateControl::Bitrate),
+                ("h264_mf", RateControl::Bitrate),
+                ("libopenh264", RateControl::Bitrate),
+            ],
+            VideoOutputFormat::WebmVp9 => &[
+                ("libvpx-vp9", RateControl::Crf),
+                ("vp9_qsv", RateControl::Bitrate),
+            ],
+        }
+    }
+
+    /// CRF の実用レンジはコデックごとに違う。同じ数値でも意味が変わる（`D-19`）。
+    fn crf(self, preset: QualityPreset) -> u32 {
+        match self {
+            VideoOutputFormat::Mp4H264 => match preset {
+                QualityPreset::High => 18,
+                QualityPreset::Standard => 23,
+                QualityPreset::Small => 28,
+                QualityPreset::Smallest => 32,
+            },
+            VideoOutputFormat::WebmVp9 => match preset {
+                QualityPreset::High => 28,
+                QualityPreset::Standard => 33,
+                QualityPreset::Small => 38,
+                QualityPreset::Smallest => 43,
+            },
+        }
+    }
+
+    fn crf_max(self) -> u32 {
+        match self {
+            VideoOutputFormat::Mp4H264 => 51,
+            VideoOutputFormat::WebmVp9 => 63,
+        }
+    }
+
+    /// ビットレート指定経路での係数。VP9 は同じ体感画質をより少ないビットで出せる。
+    fn bitrate_scale(self) -> f64 {
+        match self {
+            VideoOutputFormat::Mp4H264 => 1.0,
+            VideoOutputFormat::WebmVp9 => 0.65,
+        }
+    }
+
+    /// そのままコンテナへ入れられる音声コデック。
+    fn audio_passthrough(self) -> &'static [&'static str] {
+        match self {
+            VideoOutputFormat::Mp4H264 => &["aac", "mp3", "alac"],
+            VideoOutputFormat::WebmVp9 => &["opus", "vorbis"],
+        }
+    }
+}
+
+/// 再エンコード時に使う音声エンコーダを選ぶ。
+///
+/// WebM は AAC を入れられないため Opus を使う。`libopus` が無いビルドでは
+/// 内蔵の実験的エンコーダに `-strict -2` を付けて使う。
+fn audio_encoder(
+    format: VideoOutputFormat,
+    encoders: &HashSet<String>,
+) -> Result<(&'static str, bool)> {
+    match format {
+        VideoOutputFormat::Mp4H264 => Ok(("aac", false)),
+        VideoOutputFormat::WebmVp9 => {
+            if encoders.contains("libopus") {
+                Ok(("libopus", false))
+            } else if encoders.contains("opus") {
+                Ok(("opus", true))
+            } else {
+                Err(anyhow!("この FFmpeg には Opus エンコーダがありません。"))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,16 +175,6 @@ pub(crate) enum QualityPreset {
 }
 
 impl QualityPreset {
-    /// CRF 対応エンコーダ向けの値。数字が小さいほど高品質。
-    fn crf(self) -> u32 {
-        match self {
-            QualityPreset::High => 18,
-            QualityPreset::Standard => 23,
-            QualityPreset::Small => 28,
-            QualityPreset::Smallest => 32,
-        }
-    }
-
     /// ビットレート指定しかできないエンコーダ向けの bits per pixel。
     fn bits_per_pixel(self) -> f64 {
         match self {
@@ -90,15 +190,14 @@ impl QualityPreset {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum AudioMode {
     Copy,
-    Aac,
+    /// コンテナに合う音声コデックへ再エンコードする。MP4 は AAC、WebM は Opus。
+    Reencode,
     Remove,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VideoSettings {
-    /// Phase 1 では MP4 (H.264) のみ。UI との契約を保つために受け取る。
-    #[allow(dead_code)]
     output_format: VideoOutputFormat,
     output_mode: OutputMode,
     custom_output_dir: Option<String>,
@@ -235,26 +334,41 @@ impl RateControl {
     }
 }
 
-/// H.264 エンコーダの優先順。
-///
-/// `D-18` により同梱ビルドは LGPL 構成で `libx264` を含まないため、通常は
-/// OS / ハードウェアエンコーダが選ばれる。ユーザーが外部の GPL ビルドを
-/// 指定した場合はそちらの `libx264` を使う。
-const H264_CANDIDATES: &[(&str, RateControl)] = &[
-    ("libx264", RateControl::Crf),
-    ("h264_nvenc", RateControl::Bitrate),
-    ("h264_qsv", RateControl::Bitrate),
-    ("h264_amf", RateControl::Bitrate),
-    ("h264_videotoolbox", RateControl::Bitrate),
-    ("h264_mf", RateControl::Bitrate),
-    ("libopenh264", RateControl::Bitrate),
-];
-
-fn pick_h264(encoders: &HashSet<String>) -> Option<(&'static str, RateControl)> {
-    H264_CANDIDATES
+fn pick_encoder(
+    format: VideoOutputFormat,
+    encoders: &HashSet<String>,
+) -> Option<(&'static str, RateControl)> {
+    format
+        .candidates()
         .iter()
         .find(|(name, _)| encoders.contains(*name))
         .map(|(name, rate)| (*name, *rate))
+}
+
+/// CRF 指定のオプションはエンコーダごとに形が違う。
+fn crf_args(encoder: &str, crf: u32) -> Vec<String> {
+    match encoder {
+        // libvpx は -b:v 0 を併記しないと CRF が効かない。
+        // cpu-used の既定値は極端に遅いため、実用的な速度へ寄せる。
+        "libvpx-vp9" => vec![
+            "-crf".into(),
+            crf.to_string(),
+            "-b:v".into(),
+            "0".into(),
+            "-row-mt".into(),
+            "1".into(),
+            "-deadline".into(),
+            "good".into(),
+            "-cpu-used".into(),
+            "2".into(),
+        ],
+        _ => vec![
+            "-crf".into(),
+            crf.to_string(),
+            "-preset".into(),
+            "medium".into(),
+        ],
+    }
 }
 
 fn command(program: &Path) -> Command {
@@ -376,6 +490,20 @@ fn resolve_tools(explicit: Option<&str>) -> Result<FfmpegTools> {
     ))
 }
 
+/// 出力形式ごとの利用可否。UI で選べる形式と CRF の有効・無効を決める。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VideoFormatSupport {
+    /// TS 側の VideoOutputFormat と同じ文字列。
+    format: &'static str,
+    available: bool,
+    encoder: Option<String>,
+    /// "crf" | "bitrate"
+    rate_control: Option<String>,
+    crf_max: u32,
+    message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VideoEnvironment {
@@ -384,30 +512,58 @@ pub(crate) struct VideoEnvironment {
     ffprobe_path: Option<String>,
     version: Option<String>,
     source: Option<String>,
-    video_encoder: Option<String>,
-    rate_control: Option<String>,
+    formats: Vec<VideoFormatSupport>,
     message: Option<String>,
+}
+
+const OUTPUT_FORMATS: &[(VideoOutputFormat, &str)] = &[
+    (VideoOutputFormat::Mp4H264, "mp4H264"),
+    (VideoOutputFormat::WebmVp9, "webmVp9"),
+];
+
+fn format_support(tools: &FfmpegTools) -> Vec<VideoFormatSupport> {
+    OUTPUT_FORMATS
+        .iter()
+        .map(|(format, name)| {
+            let picked = pick_encoder(*format, &tools.encoders);
+            let audio = audio_encoder(*format, &tools.encoders);
+            let message = match (&picked, &audio) {
+                (None, _) => Some(format!(
+                    "この FFmpeg には {} 用のエンコーダがありません。",
+                    format.video_codec_name().to_uppercase()
+                )),
+                (_, Err(error)) => Some(format!("{error:#}")),
+                _ => None,
+            };
+            VideoFormatSupport {
+                format: name,
+                available: picked.is_some() && audio.is_ok(),
+                encoder: picked.map(|(encoder, _)| encoder.to_string()),
+                rate_control: picked.map(|(_, rate)| rate.as_str().to_string()),
+                crf_max: format.crf_max(),
+                message,
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
 pub(crate) async fn video_environment(ffmpeg_path: Option<String>) -> Result<VideoEnvironment, String> {
     tauri::async_runtime::spawn_blocking(move || match resolve_tools(ffmpeg_path.as_deref()) {
         Ok(tools) => {
-            let picked = pick_h264(&tools.encoders);
+            let formats = format_support(&tools);
             VideoEnvironment {
-                available: picked.is_some(),
+                available: formats.iter().any(|entry| entry.available),
                 ffmpeg_path: Some(tools.ffmpeg.to_string_lossy().to_string()),
                 ffprobe_path: Some(tools.ffprobe.to_string_lossy().to_string()),
                 version: Some(tools.version),
                 source: Some(tools.source.to_string()),
-                video_encoder: picked.map(|(name, _)| name.to_string()),
-                rate_control: picked.map(|(_, rate)| rate.as_str().to_string()),
-                message: match picked {
-                    Some(_) => None,
-                    None => Some(
-                        "この FFmpeg には利用できる H.264 エンコーダがありません。".to_string(),
-                    ),
+                message: if formats.iter().any(|entry| entry.available) {
+                    None
+                } else {
+                    Some("この FFmpeg には利用できる映像エンコーダがありません。".to_string())
                 },
+                formats,
             }
         }
         Err(error) => VideoEnvironment {
@@ -416,8 +572,7 @@ pub(crate) async fn video_environment(ffmpeg_path: Option<String>) -> Result<Vid
             ffprobe_path: None,
             version: None,
             source: None,
-            video_encoder: None,
-            rate_control: None,
+            formats: Vec::new(),
             message: Some(format!("{error:#}")),
         },
     })
@@ -818,7 +973,11 @@ fn target_bitrate_kbps(entry: &VideoInputEntry, settings: &VideoSettings) -> u32
         (None, Some(source)) => source,
         (None, None) => 30.0,
     };
-    let bits = f64::from(width) * f64::from(height) * fps * settings.quality_preset.bits_per_pixel();
+    let bits = f64::from(width)
+        * f64::from(height)
+        * fps
+        * settings.quality_preset.bits_per_pixel()
+        * settings.output_format.bitrate_scale();
     let kbps = (bits / 1000.0).round() as u32;
     kbps.clamp(200, 100_000)
 }
@@ -835,8 +994,12 @@ fn build_encode_plan(
     tools: &FfmpegTools,
     output: &Path,
 ) -> Result<EncodePlan> {
-    let (encoder, rate) = pick_h264(&tools.encoders).ok_or_else(|| {
-        anyhow!("この FFmpeg には利用できる H.264 エンコーダがありません。")
+    let format = settings.output_format;
+    let (encoder, rate) = pick_encoder(format, &tools.encoders).ok_or_else(|| {
+        anyhow!(
+            "この FFmpeg には {} 用のエンコーダがありません。",
+            format.video_codec_name().to_uppercase()
+        )
     })?;
 
     let mut warnings = Vec::new();
@@ -866,11 +1029,11 @@ fn build_encode_plan(
 
     match rate {
         RateControl::Crf => {
-            let crf = settings.crf_override.unwrap_or_else(|| settings.quality_preset.crf());
-            args.push("-crf".into());
-            args.push(crf.to_string());
-            args.push("-preset".into());
-            args.push("medium".into());
+            let crf = settings
+                .crf_override
+                .map(|value| value.min(format.crf_max()))
+                .unwrap_or_else(|| format.crf(settings.quality_preset));
+            args.extend(crf_args(encoder, crf));
         }
         RateControl::Bitrate => {
             if settings.crf_override.is_some() {
@@ -897,28 +1060,31 @@ fn build_encode_plan(
         let passthrough = entry
             .audio_codec
             .as_deref()
-            .map(|codec| MP4_AUDIO_PASSTHROUGH.contains(&codec))
+            .map(|codec| format.audio_passthrough().contains(&codec))
             .unwrap_or(false);
+        let (audio_codec, needs_strict) = audio_encoder(format, &tools.encoders)?;
         match settings.audio_mode {
             AudioMode::Copy if passthrough => {
                 args.push("-c:a".into());
                 args.push("copy".into());
             }
-            AudioMode::Copy => {
-                warnings.push(format!(
-                    "{} は MP4 へそのまま入れられないため AAC へ変換しました",
-                    entry.audio_codec.as_deref().unwrap_or("この音声")
-                ));
+            AudioMode::Copy | AudioMode::Reencode => {
+                if matches!(settings.audio_mode, AudioMode::Copy) {
+                    warnings.push(format!(
+                        "{} は {} へそのまま入れられないため {} へ変換しました",
+                        entry.audio_codec.as_deref().unwrap_or("この音声"),
+                        format.extension().to_uppercase(),
+                        audio_codec
+                    ));
+                }
                 args.push("-c:a".into());
-                args.push("aac".into());
+                args.push(audio_codec.into());
                 args.push("-b:a".into());
                 args.push(format!("{}k", settings.audio_bitrate_kbps));
-            }
-            AudioMode::Aac => {
-                args.push("-c:a".into());
-                args.push("aac".into());
-                args.push("-b:a".into());
-                args.push(format!("{}k", settings.audio_bitrate_kbps));
+                if needs_strict {
+                    args.push("-strict".into());
+                    args.push("-2".into());
+                }
             }
             AudioMode::Remove => unreachable!("remove_audio で分岐済み"),
         }
@@ -934,10 +1100,13 @@ fn build_encode_plan(
         warnings.push("HDR 入力を SDR へ変換せず出力するため、色が変わる場合があります".to_string());
     }
 
-    args.push("-movflags".into());
-    args.push("+faststart".into());
+    // faststart は mp4 muxer 固有のオプション。webm へ渡すとエラーになる。
+    if matches!(format, VideoOutputFormat::Mp4H264) {
+        args.push("-movflags".into());
+        args.push("+faststart".into());
+    }
     args.push("-f".into());
-    args.push("mp4".into());
+    args.push(format.muxer().into());
     args.push(output.to_string_lossy().to_string());
 
     Ok(EncodePlan {
@@ -1145,7 +1314,7 @@ fn is_passthrough_request(entry: &VideoInputEntry, settings: &VideoSettings) -> 
     matches!(settings.resize.mode, ResizeMode::None)
         && settings.fps_limit.is_none()
         && matches!(settings.audio_mode, AudioMode::Copy)
-        && entry.video_codec == "h264"
+        && entry.video_codec == settings.output_format.video_codec_name()
 }
 
 #[tauri::command]
@@ -1272,7 +1441,7 @@ fn process_one(
     let output_path = build_output_path_from(
         &entry.relative_path,
         output_root,
-        "mp4",
+        settings.output_format.extension(),
         settings.overwrite,
     )?;
     if let Some(parent) = output_path.parent() {
@@ -1282,7 +1451,8 @@ fn process_one(
 
     // 出力は一時ファイルへ書き、成功時にリネームする。
     // 途中のファイルを完成品として残さないため（`D-20`）。
-    let temp_path = output_path.with_extension("mp4.part");
+    let temp_path =
+        output_path.with_extension(format!("{}.part", settings.output_format.extension()));
     if temp_path.exists() {
         let _ = fs::remove_file(&temp_path);
     }
@@ -1368,7 +1538,7 @@ fn process_one(
         output_format: Some(if use_source_copy {
             "copy".to_string()
         } else {
-            format!("mp4 / {}", plan.encoder)
+            format!("{} / {}", settings.output_format.extension(), plan.encoder)
         }),
         original_size: entry.file_size,
         optimized_size: Some(final_size),
@@ -1556,12 +1726,95 @@ mod tests {
     fn encoder_choice_prefers_crf_capable_encoder() {
         let mut encoders = HashSet::new();
         encoders.insert("h264_mf".to_string());
-        assert_eq!(pick_h264(&encoders), Some(("h264_mf", RateControl::Bitrate)));
+        assert_eq!(
+            pick_encoder(VideoOutputFormat::Mp4H264, &encoders),
+            Some(("h264_mf", RateControl::Bitrate))
+        );
 
         encoders.insert("libx264".to_string());
-        assert_eq!(pick_h264(&encoders), Some(("libx264", RateControl::Crf)));
+        assert_eq!(
+            pick_encoder(VideoOutputFormat::Mp4H264, &encoders),
+            Some(("libx264", RateControl::Crf))
+        );
 
-        assert_eq!(pick_h264(&HashSet::new()), None);
+        assert_eq!(pick_encoder(VideoOutputFormat::Mp4H264, &HashSet::new()), None);
+    }
+
+    /// VP9 と H.264 でエンコーダ候補が混ざらないこと。
+    #[test]
+    fn encoder_choice_is_per_output_format() {
+        let mut encoders = HashSet::new();
+        encoders.insert("libx264".to_string());
+        assert_eq!(pick_encoder(VideoOutputFormat::WebmVp9, &encoders), None);
+
+        encoders.insert("libvpx-vp9".to_string());
+        assert_eq!(
+            pick_encoder(VideoOutputFormat::WebmVp9, &encoders),
+            Some(("libvpx-vp9", RateControl::Crf))
+        );
+    }
+
+    /// libvpx は -b:v 0 を併記しないと CRF が効かない。
+    #[test]
+    fn vp9_crf_args_pin_bitrate_to_zero() {
+        let args = crf_args("libvpx-vp9", 33);
+        assert!(args.windows(2).any(|pair| pair == ["-b:v", "0"]), "{args:?}");
+        assert!(args.windows(2).any(|pair| pair == ["-crf", "33"]), "{args:?}");
+        // preset は libvpx にないオプション。
+        assert!(!args.iter().any(|arg| arg == "-preset"), "{args:?}");
+    }
+
+    /// 同じプリセットでも、コデックごとに CRF の値が変わる。
+    #[test]
+    fn crf_differs_between_codecs() {
+        assert_eq!(VideoOutputFormat::Mp4H264.crf(QualityPreset::Standard), 23);
+        assert_eq!(VideoOutputFormat::WebmVp9.crf(QualityPreset::Standard), 33);
+        assert_eq!(VideoOutputFormat::Mp4H264.crf_max(), 51);
+        assert_eq!(VideoOutputFormat::WebmVp9.crf_max(), 63);
+    }
+
+    /// WebM は AAC を入れられないので Opus を選ぶ。
+    #[test]
+    fn audio_encoder_follows_container() {
+        let mut encoders = HashSet::new();
+        encoders.insert("aac".to_string());
+        assert_eq!(
+            audio_encoder(VideoOutputFormat::Mp4H264, &encoders).unwrap(),
+            ("aac", false)
+        );
+        assert!(audio_encoder(VideoOutputFormat::WebmVp9, &encoders).is_err());
+
+        encoders.insert("opus".to_string());
+        assert_eq!(
+            audio_encoder(VideoOutputFormat::WebmVp9, &encoders).unwrap(),
+            ("opus", true)
+        );
+
+        encoders.insert("libopus".to_string());
+        assert_eq!(
+            audio_encoder(VideoOutputFormat::WebmVp9, &encoders).unwrap(),
+            ("libopus", false)
+        );
+    }
+
+    /// AAC 音声を WebM へは通せない。逆も同じ。
+    #[test]
+    fn audio_passthrough_is_per_container() {
+        assert!(VideoOutputFormat::Mp4H264.audio_passthrough().contains(&"aac"));
+        assert!(!VideoOutputFormat::Mp4H264.audio_passthrough().contains(&"opus"));
+        assert!(VideoOutputFormat::WebmVp9.audio_passthrough().contains(&"opus"));
+        assert!(!VideoOutputFormat::WebmVp9.audio_passthrough().contains(&"aac"));
+    }
+
+    /// VP9 は同じ体感画質をより少ないビットで出せる前提の係数。
+    #[test]
+    fn vp9_bitrate_estimate_is_lower_than_h264() {
+        let source = entry(1920, 1080, 30.0);
+        let mut config = settings();
+        let h264 = target_bitrate_kbps(&source, &config);
+        config.output_format = VideoOutputFormat::WebmVp9;
+        let vp9 = target_bitrate_kbps(&source, &config);
+        assert!(vp9 < h264, "h264={h264} vp9={vp9}");
     }
 
     /// 分数表記の fps を読めること。0 除算で落ちないこと。
@@ -1589,7 +1842,12 @@ mod tests {
         assert!(!is_passthrough_request(&source, &config));
 
         config = settings();
-        config.audio_mode = AudioMode::Aac;
+        config.audio_mode = AudioMode::Reencode;
+        assert!(!is_passthrough_request(&source, &config));
+
+        // 出力形式が変われば、H.264 入力でもコピーにはならない。
+        config = settings();
+        config.output_format = VideoOutputFormat::WebmVp9;
         assert!(!is_passthrough_request(&source, &config));
     }
 }
