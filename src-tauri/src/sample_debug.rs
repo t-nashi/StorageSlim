@@ -8,8 +8,15 @@ fn repo_sample_dir() -> PathBuf {
         .join("input")
 }
 
-fn desktop_sample_dir() -> PathBuf {
-    PathBuf::from(r"C:\Users\Owner\Desktop\@StorageSlim\input")
+/// 既定の入力フォルダ。実機のサンプルを見る確認用なので、ホームから組み立てる。
+fn desktop_sample_dir() -> Option<PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+    Some(
+        PathBuf::from(home)
+            .join("Desktop")
+            .join("@StorageSlim")
+            .join("input"),
+    )
 }
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -75,8 +82,12 @@ fn inspect_repo_samples_reports_expected_flags() {
 
 #[test]
 fn inspect_desktop_samples_reports_expected_flags() {
-    let sample_dir = desktop_sample_dir();
-    assert!(sample_dir.exists(), "desktop sample directory is missing: {}", sample_dir.display());
+    // 実機のデスクトップに一式を置いた環境だけで意味がある確認。
+    // 置いていない環境（CI や別の OS）では落とさず飛ばす。
+    let Some(sample_dir) = desktop_sample_dir().filter(|dir| dir.exists()) else {
+        eprintln!("skipped: desktop sample directory is not present");
+        return;
+    };
 
     let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
     assert!(response.skipped.is_empty(), "skipped: {:?}", response.skipped);

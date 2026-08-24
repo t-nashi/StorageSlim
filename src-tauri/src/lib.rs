@@ -9,8 +9,12 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
+
+// 作成日時の設定は Windows API 経由のみ。
+#[cfg(windows)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use dirs_next::desktop_dir;
