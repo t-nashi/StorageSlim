@@ -1333,6 +1333,16 @@ button:disabled {
   .subpanel-actions {
     justify-content: flex-start;
   }
+
+  .app-header {
+    align-items: flex-start;
+  }
+
+  .app-header-aside {
+    width: 100%;
+    justify-content: flex-end;
+    padding-left: 0;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1369,6 +1379,10 @@ button:disabled {
 
   .run-button {
     min-width: 0;
+  }
+
+  .app-header-aside {
+    justify-content: flex-start;
   }
 }
 
@@ -1415,7 +1429,45 @@ button:disabled {
 .app-header-aside {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding-left: 20px;
+}
+
+.app-header .choice-group {
+  gap: 10px;
+}
+
+.app-header .choice-chip {
+  padding: 0.58rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: #c9d9e2;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.app-header .choice-chip:hover:not(:disabled) {
+  border-color: rgba(103, 210, 255, 0.34);
+  background: rgba(103, 210, 255, 0.08);
+}
+
+.app-header .choice-chip.active,
+.app-header .choice-chip.active:hover:not(:disabled) {
+  border-color: rgba(255, 207, 102, 0.78);
+  background: linear-gradient(135deg, #ffd166 0%, #ff9f43 100%);
+  color: #221100;
+  filter: none;
+  box-shadow:
+    0 0 0 1px rgba(255, 209, 102, 0.18),
+    0 10px 24px rgba(255, 159, 67, 0.24);
+}
+
+.app-header .choice-chip:focus-visible {
+  outline: 2px solid rgba(255, 209, 102, 0.44);
+  outline-offset: 2px;
 }
 
 /* 現在処理中のファイル内進捗。件数のバーより控えめに見せる。 */
