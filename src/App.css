@@ -274,42 +274,30 @@ input:focus,
   margin: 0;
 }
 
+/* 列を固定すると、項目数の違う 2 つのモードのどちらかが必ず崩れる。
+   内容幅のまま左から並べて、入らない項目だけ次の行へ送る。 */
 .settings-stack {
-  display: grid;
-  grid-template-columns: max-content max-content max-content max-content;
-  gap: 12px 16px;
-  align-items: start;
-  justify-content: space-between;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px 26px;
 }
 
-.settings-stack > .setting-output-format {
-  grid-column: 1;
-  grid-row: 1;
+.settings-stack > .field {
+  /* 縮めると操作部が重なるため、内容幅を保って折り返させる。 */
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
-.settings-stack > .setting-resize-mode {
-  grid-column: 2;
-  grid-row: 1;
+/* 追加項目のトグルは行の右端へ。 */
+.settings-stack > .advanced-toggle {
+  margin-left: auto;
 }
 
+/* 展開した追加項目と品質グリッドは 1 行を占有する。 */
+.settings-stack > .setting-other-panel,
 .settings-stack > .quality-grid {
-  grid-column: 1 / -1;
-  grid-row: 4;
-}
-
-.settings-stack > .setting-metadata {
-  grid-column: 3;
-  grid-row: 1;
-}
-
-.settings-stack > .setting-other {
-  grid-column: 4;
-  grid-row: 1 / span 2;
-}
-
-.settings-stack > .setting-other-panel {
-  grid-column: 1 / -1;
-  grid-row: 5;
+  flex: 1 0 100%;
 }
 
 .field {
@@ -332,12 +320,80 @@ input:focus,
   color: #7f95a1;
 }
 
+/* ラベルと補足アイコンを 1 行に置く。 */
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.info-hint {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.info-hint-button {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: #a9bcc7;
+  font-size: 0.64rem;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-grid;
+  place-items: center;
+  cursor: help;
+}
+
+.info-hint-button:hover,
+.info-hint-button.is-open {
+  border-color: rgba(103, 210, 255, 0.5);
+  background: rgba(103, 210, 255, 0.14);
+  color: #d9f5ff;
+}
+
+/* .field span の nowrap を上書きするため、.field 付きで書く。 */
+.field .info-hint-bubble,
+.info-hint-bubble {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: -6px;
+  z-index: 5;
+  width: max-content;
+  max-width: 280px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(11, 24, 33, 0.98);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.42);
+  color: #dceaf2;
+  font-size: 0.72rem;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+
+/* 右端の項目では左へ寄せて、パネルの外へ出さない。 */
+.field .info-hint-bubble.is-align-end,
+.info-hint-bubble.is-align-end {
+  left: auto;
+  right: -6px;
+}
+
+/* 「設定」見出しと「初期化」の並びに合わせ、リセットはラベルの隣に置く。 */
 .field-inline-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .choice-group {
@@ -405,7 +461,8 @@ input:focus,
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  flex-wrap: nowrap;
+  /* nowrap のままだと、幅が足りないときに隣の項目へ重なる。 */
+  flex-wrap: wrap;
 }
 
 .resize-control-row.is-required .resize-value-inline input {
@@ -440,7 +497,6 @@ input:focus,
 }
 
 .advanced-toggle {
-  justify-self: end;
   align-self: end;
   padding-bottom: 1px;
 }
@@ -607,6 +663,12 @@ input:focus,
   flex-wrap: wrap;
 }
 
+/* パスは長いので、行の余りを吸わせて読める幅にする。 */
+.setting-ffmpeg-path {
+  flex: 1 1 320px;
+  min-width: 240px;
+}
+
 .decode-limit {
   display: flex;
   align-items: center;
@@ -636,27 +698,11 @@ input:focus,
   color: #84a0ad;
 }
 
-.decode-limit-hint {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 0.72rem;
-  color: #84a0ad;
-  min-width: 0;
-}
-
-.decode-limit-note {
-  color: #6f8794;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 幅が足りないときは補足を隠し、既定値と範囲だけ残す。 */
-@media (max-width: 1500px) {
-  .decode-limit-note {
-    display: none;
-  }
+/* ラベルと補足アイコンの間隔だけ詰める。 */
+.decode-limit-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .checkbox input {
@@ -1214,77 +1260,11 @@ button:disabled {
 
 @media (max-width: 1280px) {
   .settings-stack {
-    grid-template-columns: max-content max-content max-content max-content;
-    gap: 12px;
-    justify-content: space-between;
-  }
-
-  .settings-stack > .setting-output-format {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .settings-stack > .setting-resize-mode {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .settings-stack > .setting-metadata {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
-  .settings-stack > .advanced-toggle {
-    grid-column: 4;
-    grid-row: 1;
-  }
-
-  .settings-stack > .setting-other-panel {
-    grid-column: 1 / -1;
-    grid-row: 5;
-  }
-
-  .settings-stack > .quality-grid {
-    grid-row: 4;
+    gap: 12px 20px;
   }
 
   .quality-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1180px) {
-  .settings-stack {
-    grid-template-columns: max-content max-content max-content;
-    justify-content: start;
-    gap: 12px 18px;
-  }
-
-  .settings-stack > .setting-output-format {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .settings-stack > .setting-resize-mode {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .settings-stack > .setting-metadata {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
-  .settings-stack > .advanced-toggle {
-    grid-column: 1;
-    grid-row: 2;
-    justify-self: start;
-  }
-
-  .settings-stack > .setting-other-panel,
-  .settings-stack > .quality-grid {
-    grid-column: 1 / -1;
-    grid-row: auto;
   }
 }
 
@@ -1321,36 +1301,7 @@ button:disabled {
   }
 
   .settings-stack {
-    grid-template-columns: max-content max-content max-content;
-    justify-content: start;
     gap: 12px 18px;
-  }
-
-  .settings-stack > .setting-output-format {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .settings-stack > .setting-resize-mode {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .settings-stack > .setting-metadata {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
-  .settings-stack > .advanced-toggle {
-    grid-column: 1;
-    grid-row: 2;
-    justify-self: start;
-  }
-
-  .settings-stack > .setting-other-panel,
-  .settings-stack > .quality-grid {
-    grid-column: 1 / -1;
-    grid-row: auto;
   }
 
   .workspace-header {
@@ -1373,7 +1324,6 @@ button:disabled {
 
 @media (max-width: 960px) {
   .workspace-header,
-  .field-inline-head,
   .progress-inline-meta,
   .subpanel-header {
     flex-direction: column;
@@ -1386,18 +1336,10 @@ button:disabled {
 }
 
 @media (max-width: 640px) {
-  .settings-stack {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-stack > .setting-output-format,
-  .settings-stack > .setting-resize-mode,
-  .settings-stack > .setting-metadata,
-  .settings-stack > .advanced-toggle,
-  .settings-stack > .setting-other-panel,
-  .settings-stack > .quality-grid {
-    grid-column: 1;
-    grid-row: auto;
+  .settings-stack > .field,
+  .settings-stack > .advanced-toggle {
+    flex: 1 0 100%;
+    margin-left: 0;
   }
 
   .inline-picker.double-line,

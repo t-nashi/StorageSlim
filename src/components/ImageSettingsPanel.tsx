@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChoiceGroup, type ChoiceOption } from "./ChoiceGroup";
+import { InfoHint } from "./InfoHint";
 import { QualityField } from "./QualityField";
 import { clamp } from "../lib/format";
 import {
@@ -54,7 +55,13 @@ export function ImageSettingsPanel({
 
       <div className="settings-stack">
         <div className="field setting-output-format">
-          <span>出力形式</span>
+          <span className="field-label">
+            出力形式
+            <InfoHint
+              label="出力形式"
+              text="オリジナル維持は入力と同じ形式で書き出します。アニメーション GIF は GIF 出力のみ、AVIF 入力は現ビルドでは読込を制限しています。"
+            />
+          </span>
           <ChoiceGroup
             value={settings.outputFormat}
             options={outputFormatChoices}
@@ -63,7 +70,13 @@ export function ImageSettingsPanel({
         </div>
 
         <div className="field setting-resize-mode">
-          <span>リサイズ基準</span>
+          <span className="field-label">
+            リサイズ基準
+            <InfoHint
+              label="リサイズ基準"
+              text="縦横比は保ち、指定より大きい入力だけ縮小します。拡大はしません。"
+            />
+          </span>
           <div className={`resize-control-row ${resizeValueMissing ? "is-required" : ""}`}>
             <ChoiceGroup
               value={settings.resize.mode}
@@ -132,7 +145,13 @@ export function ImageSettingsPanel({
         </div>
 
         <div className="field setting-metadata">
-          <span>メタデータ</span>
+          <span className="field-label">
+            メタデータ
+            <InfoHint
+              label="メタデータ"
+              text="保持は形式やライブラリの制約によりベストエフォートです。HEIC / HEIF のオリジナル維持コピーでは、削除と両立しない場合があります。"
+            />
+          </span>
           <ChoiceGroup
             value={settings.metadataMode}
             options={metadataOptions}
@@ -275,9 +294,15 @@ export function ImageSettingsPanel({
             </div>
 
             <div className="decode-limit">
-              <label className="decode-limit-label" htmlFor="decode-limit">
-                デコード上限
-              </label>
+              <span className="decode-limit-head">
+                <label className="decode-limit-label" htmlFor="decode-limit">
+                  デコード上限
+                </label>
+                <InfoHint
+                  label="デコード上限"
+                  text={`大きな画像の読込に必要な量。上げすぎるとメモリ不足でアプリが終了する場合があります（既定 ${DECODE_LIMIT_DEFAULT_MB} MB / 範囲 ${DECODE_LIMIT_MIN_MB}-${DECODE_LIMIT_MAX_MB}）`}
+                />
+              </span>
               <input
                 id="decode-limit"
                 className="decode-limit-input"
@@ -303,12 +328,6 @@ export function ImageSettingsPanel({
                 }}
               />
               <span className="decode-limit-unit">MB</span>
-              <small className="decode-limit-hint">
-                既定 {DECODE_LIMIT_DEFAULT_MB} / 範囲 {DECODE_LIMIT_MIN_MB}-{DECODE_LIMIT_MAX_MB}
-                <span className="decode-limit-note">
-                  大きな画像の読込に必要な量。上げすぎるとメモリ不足でアプリが終了する場合があります
-                </span>
-              </small>
             </div>
           </div>
         ) : null}

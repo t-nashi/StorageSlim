@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChoiceGroup, type ChoiceOption } from "./ChoiceGroup";
+import { InfoHint } from "./InfoHint";
 import { clamp } from "../lib/format";
 import {
   isResizeValueMissing,
@@ -105,6 +106,15 @@ export function VideoSettingsPanel({
   const support = environment?.formats.find((entry) => entry.format === settings.outputFormat) ?? null;
   const crfSupported = support?.rateControl === "crf";
   const crfMax = support?.crfMax ?? 51;
+  const estimatedMb = estimatedMbPerMinute(settings.qualityPreset, settings.outputFormat).toFixed(0);
+  const crfHint = crfSupported
+    ? `空欄でプリセットに従う。小さいほど高品質 (0-${crfMax})`
+    : `${support?.encoder ?? "選択中のエンコーダ"} は CRF 指定に対応しないため無効です`;
+  const qualityHint = crfSupported
+    ? // CRF は固定品質なので、サイズは素材次第で目安から大きく外れる。
+      `CRF ${PRESET_CRF[settings.outputFormat][settings.qualityPreset]} で固定品質。1080p30 で 1 分あたり ${estimatedMb} MB 程度を目安に、素材により増減します。`
+    : // ビットレート指定なら、この値がそのまま目標になる。
+      `ビットレート指定。1080p30 で 1 分あたり約 ${estimatedMb} MB。`;
   const outputFormatOptions: Array<ChoiceOption<VideoOutputFormat>> = outputFormatLabels.map((option) => {
     const entry = environment?.formats.find((item) => item.format === option.value);
     // 環境を確認できるまでは選択させる。確認後に使えないものだけ落とす。
@@ -130,7 +140,15 @@ export function VideoSettingsPanel({
 
       <div className="settings-stack">
         <div className="field setting-output-format">
-          <span>出力形式</span>
+          <span className="field-label">
+            出力形式
+            {settings.outputFormat === "webmVp9" ? (
+              <InfoHint
+                label="出力形式"
+                text="MP4 より小さくなりますが、エンコードは遅く、再生できないアプリもあります。"
+              />
+            ) : null}
+          </span>
           <ChoiceGroup
             value={settings.outputFormat}
             options={outputFormatOptions}
@@ -143,15 +161,16 @@ export function VideoSettingsPanel({
               }))
             }
           />
-          {settings.outputFormat === "webmVp9" ? (
-            <small className="field-note">
-              MP4 より小さくなりますが、エンコードは遅く、再生できないアプリもあります。
-            </small>
-          ) : null}
         </div>
 
         <div className="field setting-resize-mode">
-          <span>リサイズ基準</span>
+          <span className="field-label">
+            リサイズ基準
+            <InfoHint
+              label="リサイズ基準"
+              text="寸法は yuv420 の制約で偶数へ丸めます。拡大はしません。"
+            />
+          </span>
           <div className={`resize-control-row ${resizeValueMissing ? "is-required" : ""}`}>
             <ChoiceGroup
               value={settings.resize.mode}
@@ -214,33 +233,25 @@ export function VideoSettingsPanel({
               />
             </div>
           </div>
-          <small className="field-note">寸法は yuv420 の制約で偶数へ丸めます。拡大はしません。</small>
         </div>
 
         <div className="field setting-quality-preset">
-          <span>品質</span>
+          <span className="field-label">
+            品質
+            <InfoHint label="品質" text={qualityHint} />
+          </span>
           <ChoiceGroup
             value={settings.qualityPreset}
             options={qualityOptions}
             onChange={(qualityPreset) => updateSettings((current) => ({ ...current, qualityPreset }))}
           />
-          <small className="field-note">
-            {crfSupported
-              ? // CRF は固定品質なので、サイズは素材次第で目安から大きく外れる。
-                `CRF ${PRESET_CRF[settings.outputFormat][settings.qualityPreset]} で固定品質。1080p30 で 1 分あたり ${estimatedMbPerMinute(
-                  settings.qualityPreset,
-                  settings.outputFormat,
-                ).toFixed(0)} MB 程度を目安に、素材により増減します`
-              : // ビットレート指定なら、この値がそのまま目標になる。
-                `ビットレート指定。1080p30 で 1 分あたり約 ${estimatedMbPerMinute(
-                  settings.qualityPreset,
-                  settings.outputFormat,
-                ).toFixed(0)} MB`}
-          </small>
         </div>
 
         <div className="field setting-fps">
-          <span>フレームレート</span>
+          <span className="field-label">
+            フレームレート
+            <InfoHint label="フレームレート" text="入力より高い値には変換しません。" />
+          </span>
           <ChoiceGroup
             value={settings.fpsLimit == null ? "none" : String(settings.fpsLimit)}
             options={fpsOptions}
@@ -251,7 +262,6 @@ export function VideoSettingsPanel({
               }))
             }
           />
-          <small className="field-note">入力より高い値には変換しません。</small>
         </div>
 
         <div className="field setting-audio">
@@ -273,13 +283,18 @@ export function VideoSettingsPanel({
         </div>
 
         <div className="field setting-metadata">
-          <span>メタデータ</span>
+          <span className="field-label">
+            メタデータ
+            <InfoHint
+              label="メタデータ"
+              text="削除しても向きは保たれます（回転は映像へ焼き込まれます）。"
+            />
+          </span>
           <ChoiceGroup
             value={settings.metadataMode}
             options={metadataOptions}
             onChange={(metadataMode) => updateSettings((current) => ({ ...current, metadataMode }))}
           />
-          <small className="field-note">削除しても向きは保たれます（回転は映像へ焼き込まれます）。</small>
         </div>
 
         <div className="advanced-toggle">
@@ -343,9 +358,12 @@ export function VideoSettingsPanel({
             </div>
 
             <div className="decode-limit">
-              <label className="decode-limit-label" htmlFor="video-crf">
-                CRF 指定
-              </label>
+              <span className="decode-limit-head">
+                <label className="decode-limit-label" htmlFor="video-crf">
+                  CRF 指定
+                </label>
+                <InfoHint label="CRF 指定" text={crfHint} />
+              </span>
               <input
                 id="video-crf"
                 className="decode-limit-input"
@@ -372,14 +390,9 @@ export function VideoSettingsPanel({
                   }));
                 }}
               />
-              <small className="decode-limit-hint">
-                {crfSupported
-                  ? `空欄でプリセットに従う。小さいほど高品質 (0-${crfMax})`
-                  : `${support?.encoder ?? "選択中のエンコーダ"} は CRF 指定に対応しないため無効です`}
-              </small>
             </div>
 
-            <div className="field">
+            <div className="field setting-ffmpeg-path">
               <div className="field-inline-head">
                 <span>ffmpeg のパス</span>
                 <button
