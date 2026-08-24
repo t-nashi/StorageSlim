@@ -434,6 +434,8 @@ fn crf_args(encoder: &str, crf: u32) -> Vec<String> {
 }
 
 fn command(program: &Path) -> Command {
+    // コンソール窓の抑止は Windows だけなので、他では mut が要らない。
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(program);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -448,6 +450,41 @@ fn sibling_ffprobe(ffmpeg: &Path) -> PathBuf {
     }
 }
 
+/// ffprobe の `format_name` は多重化された候補を返す。
+///
+/// MP4 なら `mov,mp4,m4a,3gp,3g2,mj2` のように並ぶため、先頭を採ると .mp4 が
+/// `MOV` と表示される。拡張子が候補に含まれていればそれを優先し、含まれない場合
+/// だけ先頭へ落とす。
+fn container_label(format_name: &str, path: &Path) -> String {
+    let names: Vec<&str> = format_name
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    let first = names.first().copied().unwrap_or("unknown");
+    if names.len() < 2 {
+        return first.to_uppercase();
+    }
+
+    let ext = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    // m4v / 3gpp のように、拡張子と多重化名が一致しない綴りを寄せる。
+    let alias = match ext.as_str() {
+        "m4v" | "m4a" => "mp4",
+        "3gpp" => "3gp",
+        "qt" => "mov",
+        other => other,
+    };
+    names
+        .iter()
+        .find(|name| **name == alias)
+        .copied()
+        .unwrap_or(first)
+        .to_uppercase()
+}
+
 /// 同梱バイナリの置き場所。exe と同じ階層と `binaries/` を見る。
 fn bundled_candidates() -> Vec<PathBuf> {
     let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
@@ -459,6 +496,21 @@ fn bundled_candidates() -> Vec<PathBuf> {
         }
     }
     candidates
+}
+
+/// PATH に頼れないときの既知の置き場所。
+///
+/// Finder から起動した .app は launchd の最小 PATH しか継承しないため、Homebrew や
+/// /usr/local に入れた ffmpeg が PATH 経由では見つからない。同梱バイナリが無い
+/// 環境（開発中の macOS）でも動くように、既知のパスを最後に試す。
+fn well_known_candidates() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
+    ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+        .iter()
+        .map(|dir| PathBuf::from(dir).join("ffmpeg"))
+        .collect()
 }
 
 fn probe_version(ffmpeg: &Path) -> Result<String> {
@@ -511,11 +563,14 @@ fn resolve_tools(explicit: Option<&str>) -> Result<FfmpegTools> {
         attempts.push((candidate, "bundled"));
     }
     attempts.push((PathBuf::from("ffmpeg"), "path"));
+    for candidate in well_known_candidates() {
+        attempts.push((candidate, "system"));
+    }
 
     let mut last_error = None;
     for (candidate, source) in attempts {
         // 明示指定と PATH 以外は、存在しないものを試さない。
-        if source == "bundled" && !candidate.exists() {
+        if (source == "bundled" || source == "system") && !candidate.exists() {
             continue;
         }
         match probe_version(&candidate) {
@@ -887,15 +942,14 @@ fn inspect_one(
         .to_string();
     let hdr = matches!(transfer.as_str(), "smpte2084" | "arib-std-b67") || primaries == "bt2020";
 
-    let container = probe
-        .get("format")
-        .and_then(|format| format.get("format_name"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .split(',')
-        .next()
-        .unwrap_or("unknown")
-        .to_string();
+    let container = container_label(
+        probe
+            .get("format")
+            .and_then(|format| format.get("format_name"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        path,
+    );
 
     let mut warnings = Vec::new();
     if let Some(duration) = duration_sec {
@@ -934,7 +988,7 @@ fn inspect_one(
         root_path: root.to_string_lossy().to_string(),
         relative_path: relative.to_string(),
         file_name,
-        format_label: format!("{} / {}", container.to_uppercase(), video_codec),
+        format_label: format!("{container} / {video_codec}"),
         video_codec,
         audio_codec,
         file_size: metadata.len(),
@@ -1681,6 +1735,29 @@ mod tests {
             hdr: false,
             warnings: Vec::new(),
         }
+    }
+
+    /// .mp4 の format_name は mov から始まる。拡張子が候補にあればそちらを採る。
+    #[test]
+    fn container_label_prefers_the_extension() {
+        let mp4 = Path::new("/tmp/C0370.MP4");
+        assert_eq!(container_label("mov,mp4,m4a,3gp,3g2,mj2", mp4), "MP4");
+
+        let mov = Path::new("/tmp/clip.mov");
+        assert_eq!(container_label("mov,mp4,m4a,3gp,3g2,mj2", mov), "MOV");
+
+        // 候補に無い拡張子は先頭へ落とす。
+        let unknown = Path::new("/tmp/clip.bin");
+        assert_eq!(container_label("mov,mp4,m4a,3gp,3g2,mj2", unknown), "MOV");
+
+        // m4v は mp4 として多重化される。
+        let m4v = Path::new("/tmp/clip.m4v");
+        assert_eq!(container_label("mov,mp4,m4a,3gp,3g2,mj2", m4v), "MP4");
+
+        // 候補が 1 つだけなら拡張子は見ない。
+        let webm = Path::new("/tmp/clip.webm");
+        assert_eq!(container_label("matroska,webm", webm), "WEBM");
+        assert_eq!(container_label("avi", Path::new("/tmp/clip.avi")), "AVI");
     }
 
     fn settings() -> VideoSettings {

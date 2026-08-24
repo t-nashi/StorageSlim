@@ -249,7 +249,7 @@ export interface VideoEnvironment {
   ffmpegPath: string | null;
   ffprobePath: string | null;
   version: string | null;
-  /** "setting" | "bundled" | "path" */
+  /** "setting" | "bundled" | "path" | "system" */
   source: string | null;
   formats: VideoFormatSupport[];
   message: string | null;

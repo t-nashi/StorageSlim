@@ -292,14 +292,17 @@ npm run ffmpeg
 
 これを実行してから `npm run tauri build` します。未実行のままビルドすると `resource path binaries\FFMPEG-LICENSE.txt doesn't exist` のようなエラーで止まります。
 
-macOS: LGPL 構成の配布ビルドが無いため同梱していません。`PATH` に `ffmpeg` / `ffprobe` を入れるか、設定の詳細 → `ffmpeg のパス` を指定します。
+macOS: LGPL 構成の配布ビルドが無いため同梱していません。`brew install ffmpeg` などで用意します。
+
+Finder から起動した `.app` は launchd の最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`）しか継承しないため、シェルの `PATH` に入れただけでは見つかりません。そのため `/opt/homebrew/bin` / `/usr/local/bin` / `/usr/bin` を既知の置き場所として最後に試します（経路は `system`）。ここに無い場合は設定の詳細 → `ffmpeg のパス` を指定します。
 
 確認:
 
-- 動画モードの詳細設定に、検出した FFmpeg のバージョン・エンコーダ名・経路（`setting` / `bundled` / `path`）が出る
+- 動画モードの詳細設定に、検出した FFmpeg のバージョン・エンコーダ名・経路（`setting` / `bundled` / `path` / `system`）が出る
 - Windows の同梱ビルドでは経路が `bundled` になり、エンコーダが `h264_nvenc` / `h264_qsv` / `h264_amf` / `h264_mf` / `libopenh264` のいずれかになる（`libx264` は同梱ビルドに入っていない）
-- macOS では経路が `path` または `setting` になる
+- macOS では経路が `path` / `system` / `setting` のいずれかになる（Finder 起動では `system`、ターミナルから直接起動すると `path`）
 - `ffmpeg のパス` に自分の GPL ビルドを指定すると、エンコーダが `libx264` に変わり、CRF 指定が有効になる
+- Homebrew の `ffmpeg` は GPL ビルド（`libx264` 入り）なので、macOS の手元確認では `libx264` / CRF 経路になる。Windows の同梱ビルドとは経路が違うので、ビットレート指定側の確認は同梱ビルドか `libx264` の無いビルドで行う
 - FFmpeg が見つからない場合、入力と結果パネルの上に理由が赤帯で出て、`圧縮を実行` が押せない
 - 対応ハードウェアが無い環境でも H.264 出力が成功する（動くエンコーダを実際に試して選ぶため）
 
