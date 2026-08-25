@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
+      "binaries/FFMPEG-LICENSE.txt": "FFMPEG-LICENSE.txt",
+      "binaries/FFMPEG-GPL-3.0.txt": "FFMPEG-GPL-3.0.txt",
+      "binaries/FFMPEG-BUILD-INFO.txt": "FFMPEG-BUILD-INFO.txt",
+      "binaries/FFMPEG-STATIC-LIBS-LICENSE.txt": "FFMPEG-STATIC-LIBS-LICENSE.txt"
+    }
+  }
+}

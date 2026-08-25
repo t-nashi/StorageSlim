@@ -282,25 +282,22 @@ failed to decode image: Memory limit exceeded
 
 ### 8-0. 準備
 
-FFmpeg が必要です。Windows は同梱、macOS は各自の用意になります。
+FFmpeg が必要です。Windows / macOS とも同梱します。
 
-Windows:
-
-```powershell
+```
 npm run ffmpeg
 ```
 
-これを実行してから `npm run tauri build` します。未実行のままビルドすると `resource path binaries\FFMPEG-LICENSE.txt doesn't exist` のようなエラーで止まります。
+これを実行してから `npm run tauri build` します。未実行のままビルドすると `resource path binaries\FFMPEG-LICENSE.txt doesn't exist` のようなエラーで止まります。macOS はソースからビルドするため、初回は 10 分程度かかります（要 `brew install libvpx opus pkg-config`）。
 
-macOS: LGPL 構成の配布ビルドが無いため同梱していません。`brew install ffmpeg` などで用意します。
-
-Finder から起動した `.app` は launchd の最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`）しか継承しないため、シェルの `PATH` に入れただけでは見つかりません。そのため `/opt/homebrew/bin` / `/usr/local/bin` / `/usr/bin` を既知の置き場所として最後に試します（経路は `system`）。ここに無い場合は設定の詳細 → `ffmpeg のパス` を指定します。
+同梱バイナリが無い状態で確認する場合、Finder から起動した `.app` は launchd の最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`）しか継承しないため、シェルの `PATH` に入れただけでは見つかりません。そのため `/opt/homebrew/bin` / `/usr/local/bin` / `/usr/bin` を既知の置き場所として最後に試します（経路は `system`）。ここに無い場合は設定の詳細 → `ffmpeg のパス` を指定します。
 
 確認:
 
 - 動画モードの詳細設定に、検出した FFmpeg のバージョン・エンコーダ名・経路（`setting` / `bundled` / `path` / `system`）が出る
 - Windows の同梱ビルドでは経路が `bundled` になり、エンコーダが `h264_nvenc` / `h264_qsv` / `h264_amf` / `h264_mf` / `libopenh264` のいずれかになる（`libx264` は同梱ビルドに入っていない）
-- macOS では経路が `path` / `system` / `setting` のいずれかになる（Finder 起動では `system`、ターミナルから直接起動すると `path`）
+- macOS の同梱ビルドでは経路が `bundled` になり、エンコーダが `h264_videotoolbox`（MP4）と `libvpx-vp9`（WebM）になる
+- 同梱バイナリを外した場合、macOS では経路が `path` / `system` / `setting` のいずれかになる（Finder 起動では `system`、ターミナルから直接起動すると `path`）
 - `ffmpeg のパス` に自分の GPL ビルドを指定すると、エンコーダが `libx264` に変わり、CRF 指定が有効になる
 - Homebrew の `ffmpeg` は GPL ビルド（`libx264` 入り）なので、macOS の手元確認では `libx264` / CRF 経路になる。Windows の同梱ビルドとは経路が違うので、ビットレート指定側の確認は同梱ビルドか `libx264` の無いビルドで行う
 - FFmpeg が見つからない場合、入力と結果パネルの上に理由が赤帯で出て、`圧縮を実行` が押せない

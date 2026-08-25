@@ -65,17 +65,28 @@ StorageSlim は、画像と動画をローカル PC 上で圧縮・リサイズ�
 2. 実行ファイルと同じ階層、およびその `binaries/`（同梱バイナリ）
 3. `PATH`
 
-Windows 向けには LGPL 構成のビルドを取得して同梱します。
+Windows 向けは LGPL 構成の配布ビルドを取得し、macOS 向けはソースからビルドして同梱します。どちらも次のコマンド 1 つです。
 
-```powershell
+```
 npm run ffmpeg
 ```
 
-- `libx264` / `libx265` を含む GPL ビルドは同梱しません。取得したビルドが GPL 構成だった場合、スクリプトは中断します。
-- 取得先は [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) の `win64-lgpl` です。
+共通:
+
+- `libx264` / `libx265` を含む GPL ビルドは同梱しません。GPL 構成だった場合、スクリプトは中断します。
 - バイナリは git 管理対象外です。`tauri build` の前に一度実行してください。
+
+Windows:
+
+- 取得先は [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) の `win64-lgpl` です。
 - ffmpeg / ffprobe 合わせて約 220 MB（圧縮後およそ 92 MB）インストーラが大きくなります。
-- macOS 向けの LGPL 構成の配布ビルドは存在しないため未同梱です。`PATH` に入れるか `ffmpeg のパス` で指定してください。自前ビルドの configure 例はスクリプトが表示します。
+
+macOS:
+
+- LGPL 構成の配布ビルドが存在しないため、公式ソース（`https://ffmpeg.org/releases/`）から自前でビルドします。sha256 を検証し、GPL 構成でないことと、システム外のライブラリへ依存していないことをビルド後に確認します。初回は 10 分程度かかります。
+- Xcode Command Line Tools と、WebM 出力用の libvpx / libopus が必要です。`brew install libvpx opus pkg-config` で用意してください。静的リンクするため、利用者の環境に Homebrew は要りません。
+- H.264 と AAC は OS 内蔵の VideoToolbox / AudioToolbox を使うため、追加のライブラリは不要です。
+- ffmpeg / ffprobe 合わせて約 48 MB です。
 
 同梱ビルドには `libx264` が入らないため、H.264 は OS / ハードウェアエンコーダ（NVENC / QSV / AMF / Media Foundation / VideoToolbox）を使います。実測では**同一品質なら x264 より 15-25% 大きく**なります。圧縮率を重視する場合は、自分で用意した GPL ビルドを `ffmpeg のパス` に指定してください。計測値は [docs/format-matrix-video.md](docs/format-matrix-video.md) にあります。
 
@@ -288,11 +299,12 @@ npm run notices
 
 再配布時は `LICENSE` と `THIRD-PARTY-NOTICES.md` を必ず同梱する。msi / nsis / app などのバンドルへは `src-tauri/tauri.conf.json` の `bundle.resources` 経由で自動的に含まれる。ポータブル ZIP を手で作る場合は、この 2 ファイルを自分で入れること。
 
-FFmpeg を同梱する Windows ビルドでは、あわせて次の 3 ファイルも配布物へ含まれる（`src-tauri/tauri.windows.conf.json`）。ポータブル ZIP を手で作る場合はこれらも入れること。
+FFmpeg を同梱するビルドでは、あわせて次のファイルも配布物へ含まれる（`src-tauri/tauri.windows.conf.json` / `src-tauri/tauri.macos.conf.json`）。ポータブル ZIP を手で作る場合はこれらも入れること。
 
 - `FFMPEG-LICENSE.txt`（LGPL v3 全文）
 - `FFMPEG-GPL-3.0.txt`（GPL v3 全文。LGPL v3 が参照している）
-- `FFMPEG-BUILD-INFO.txt`（バージョンと configure オプション、取得元 URL）
+- `FFMPEG-BUILD-INFO.txt`（バージョンと configure オプション、取得元 URL とソースの sha256）
+- `FFMPEG-STATIC-LIBS-LICENSE.txt`（macOS のみ。静的リンクした libvpx / opus の条文）
 
 有償でビルド済みバイナリを配布する場合の注意:
 

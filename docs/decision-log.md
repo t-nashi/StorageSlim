@@ -1009,3 +1009,52 @@ Phase 2 に置いた出力形式（WebM VP9 / MP4 AV1 / MP4 HEVC）のうち、�
 ### requirements.md 反映要否
 
 反映済み（`docs/requirements-video.md`、`docs/format-matrix-video.md`）
+
+## D-22 macOS 向け FFmpeg の調達方法
+
+- 状態: 決定済み
+- 分類: 技術
+- 優先度: 高
+- 決定日: 2026-08-25
+- 決定者: User
+
+### 論点
+
+`D-18` で LGPL ビルドの同梱を決めたが、macOS には LGPL 構成の配布ビルドが存在しない。BOOTH で macOS 版も売る前提に立つと、購入者が何も準備せずに動画圧縮を使える必要がある。
+
+### 選択肢
+
+- 同梱せず、購入者に `brew install ffmpeg` を案内する
+- Homebrew のビルドをそのまま同梱する
+- 公式ソースから LGPL 構成でビルドして同梱する
+
+### 決定
+
+- **公式ソース（`https://ffmpeg.org/releases/`）から LGPL 構成でビルドし、sidecar として同梱する**
+- バージョンは固定し、tarball の sha256 を検証する
+- H.264 と AAC は OS 内蔵の VideoToolbox / AudioToolbox を使い、追加ライブラリを持ち込まない
+- WebM 出力に必要な libvpx と libopus（いずれも BSD）だけを静的リンクし、条文を `FFMPEG-STATIC-LIBS-LICENSE.txt` として同梱する
+- 自動検出で Homebrew の dylib を拾う機能（xcb / xlib / lzma）は明示的に無効化し、ビルド後に `otool -L` でシステム外の依存が無いことを検査する
+- 配布対象は Apple Silicon（`aarch64-apple-darwin`）とする
+
+### 理由
+
+- 購入者に事前準備を求める形は、有償配布では問い合わせの主要因になる
+- Homebrew のビルドは GPL 構成（`libx264` / `libx265` 入り）であり、`D-18` の方針では同梱できない
+- Homebrew の dylib へ動的リンクした状態で配ると、購入者の環境では起動しない。静的リンクと依存検査でこれを構造的に防ぐ
+- Intel 版は x86_64 の依存ライブラリを別途用意する必要があり、費用と手間に対して需要が読めない
+
+### 影響
+
+- `scripts/fetch-ffmpeg.mjs` が OS ごとに分岐する（Windows は取得、macOS はビルド）
+- macOS のビルドには Xcode Command Line Tools と `brew install libvpx opus pkg-config` が必要
+- macOS 版 dmg が 5.7 MB から 27 MB になった
+- 商品ページに Apple Silicon 専用である旨の記載が必要
+
+### 保留条件 / 再確認条件
+
+- Intel Mac の購入希望が実際に出た場合、クロスビルドの構成を再検討する
+
+### requirements.md 反映要否
+
+不要（実装手段の話であり、要件は `D-18` のまま）
