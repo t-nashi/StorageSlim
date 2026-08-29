@@ -9,7 +9,11 @@ StorageSlim をご購入いただきありがとうございます
 -----------
 
 【Windows 版】
-  Windows 10（64bit）以降
+  Windows 11（64bit）
+
+  ※ Windows 10 では動作確認を行っていないため、対応しておりません。
+     ご購入前に、設定 →「システム」→「バージョン情報」で
+     「エディション」が Windows 11 になっているかご確認ください。
 
 【Mac 版】
   Apple Silicon 搭載 Mac（M1 以降）
