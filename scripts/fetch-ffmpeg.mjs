@@ -43,6 +43,32 @@ const TARGETS = {
     version: "9.0.1",
     url: "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
     sha256: "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635",
+    // 指定しないとビルドしたマシンの OS バージョンが最低要件になり、
+    // 古い macOS では ffmpeg だけが起動しない状態で配布してしまう。
+    // Apple Silicon は macOS 11 以降なので、そこへ合わせる。
+    deploymentTarget: "11.0",
+  },
+};
+
+/**
+ * FFmpeg へ静的リンクする依存。Homebrew のものはビルドしたマシンの OS
+ * バージョンが最低要件として焼き込まれているため使えない。同じ理由で
+ * これらもソースからビルドする。どちらも BSD ライセンス。
+ */
+const MACOS_DEPS = {
+  libvpx: {
+    version: "1.16.0",
+    url: "https://github.com/webmproject/libvpx/archive/refs/tags/v1.16.0.tar.gz",
+    sha256: "7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c",
+    dir: "libvpx-1.16.0",
+    licenseFile: "LICENSE",
+  },
+  opus: {
+    version: "1.6.1",
+    url: "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+    sha256: "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+    dir: "opus-1.6.1",
+    licenseFile: "COPYING",
   },
 };
 
@@ -65,6 +91,50 @@ mkdirSync(work, { recursive: true });
 function writeGplV3FromSource(sourceDir) {
   copyFileSync(join(sourceDir, "COPYING.GPLv3"), join(DEST_DIR, "FFMPEG-GPL-3.0.txt"));
   console.log("[fetch-ffmpeg] placed FFMPEG-GPL-3.0.txt");
+}
+
+/**
+ * 固定バージョンのソースを取得し、sha256 を検証して展開する。
+ */
+function downloadAndExtract({ url, sha256, dir }) {
+  const archive = join(work, url.split("/").pop());
+  console.log(`[fetch-ffmpeg] downloading ${url}`);
+  execFileSync("curl", ["-fsSL", "-o", archive, url], { stdio: "inherit" });
+
+  const digest = execFileSync("shasum", ["-a", "256", archive], { encoding: "utf8" }).split(/\s+/)[0];
+  if (digest !== sha256) {
+    fail(`${url} の sha256 が想定と違います。\n  期待: ${sha256}\n  実際: ${digest}`);
+  }
+
+  execFileSync("tar", ["xf", archive, "-C", work], { stdio: "inherit" });
+  const extracted = join(work, dir);
+  if (!existsSync(extracted)) {
+    fail(`${extracted} が見つかりません。展開結果を確認してください。`);
+  }
+  return extracted;
+}
+
+/**
+ * 最低動作 OS バージョンを検査する。
+ *
+ * 指定を忘れるとビルドしたマシンの OS バージョンが焼き込まれ、
+ * 古い macOS では「アプリは起動するが動画モードだけ動かない」という
+ * 分かりにくい壊れ方をする。ビルド時点で止める。
+ */
+function assertDeploymentTarget(path, label) {
+  const loadCommands = execFileSync("otool", ["-l", path], { encoding: "utf8" });
+  const versions = [...loadCommands.matchAll(/^\s*minos\s+(\S+)/gm)].map((match) => match[1]);
+  const unexpected = [...new Set(versions)].filter((version) => version !== target.deploymentTarget);
+  if (versions.length === 0 || unexpected.length > 0) {
+    fail(
+      [
+        `${label} の最低動作 OS バージョンが想定と違います。`,
+        `  期待: ${target.deploymentTarget}`,
+        `  実際: ${versions.length === 0 ? "(取得できず)" : [...new Set(versions)].join(", ")}`,
+        "MACOSX_DEPLOYMENT_TARGET が効いているか確認してください。",
+      ].join("\n"),
+    );
+  }
 }
 
 /**
@@ -148,39 +218,55 @@ function buildMacos() {
     }
   }
 
-  const HOMEBREW = "/opt/homebrew";
-  const staticLibs = join(work, "staticlibs");
-  mkdirSync(staticLibs, { recursive: true });
-  for (const lib of ["libvpx.a", "libopus.a"]) {
-    const from = join(HOMEBREW, "lib", lib);
-    if (!existsSync(from)) {
-      fail(
-        [
-          `${from} が見つかりません。WebM (VP9 + Opus) の出力に必要です。`,
-          "次のコマンドで用意してください:",
-          "",
-          "  brew install libvpx opus pkg-config",
-        ].join("\n"),
-      );
-    }
-    // -L の先頭に .a だけを置いたディレクトリを渡し、dylib ではなく
-    // 静的ライブラリが選ばれるようにする。
-    execFileSync("ln", ["-sf", from, join(staticLibs, lib)]);
+  const depsPrefix = join(work, "deps");
+  const jobs = execFileSync("sysctl", ["-n", "hw.ncpu"], { encoding: "utf8" }).trim();
+  const buildEnv = { ...process.env, MACOSX_DEPLOYMENT_TARGET: target.deploymentTarget };
+
+  const libvpxSource = downloadAndExtract(MACOS_DEPS.libvpx);
+  console.log("[fetch-ffmpeg] building libvpx");
+  const libvpxBuild = join(work, "libvpx-build");
+  mkdirSync(libvpxBuild, { recursive: true });
+  // libvpx のターゲット名は darwin20 が macOS 11 に対応する。
+  execFileSync(
+    join(libvpxSource, "configure"),
+    [
+      "--target=arm64-darwin20-gcc",
+      `--prefix=${depsPrefix}`,
+      "--disable-examples",
+      "--disable-tools",
+      "--disable-docs",
+      "--disable-unit-tests",
+      "--enable-static",
+      "--disable-shared",
+      "--enable-pic",
+      "--enable-vp9",
+      "--disable-vp8",
+    ],
+    { cwd: libvpxBuild, stdio: "inherit", env: buildEnv },
+  );
+  execFileSync("make", [`-j${jobs}`], { cwd: libvpxBuild, stdio: "inherit", env: buildEnv });
+  execFileSync("make", ["install"], { cwd: libvpxBuild, stdio: "inherit", env: buildEnv });
+
+  const opusSource = downloadAndExtract(MACOS_DEPS.opus);
+  console.log("[fetch-ffmpeg] building opus");
+  execFileSync(
+    "./configure",
+    [`--prefix=${depsPrefix}`, "--disable-shared", "--enable-static", "--disable-doc", "--disable-extra-programs"],
+    { cwd: opusSource, stdio: "inherit", env: buildEnv },
+  );
+  execFileSync("make", [`-j${jobs}`], { cwd: opusSource, stdio: "inherit", env: buildEnv });
+  execFileSync("make", ["install"], { cwd: opusSource, stdio: "inherit", env: buildEnv });
+
+  for (const [name, dep] of Object.entries(MACOS_DEPS)) {
+    const built = join(depsPrefix, "lib", name === "opus" ? "libopus.a" : "libvpx.a");
+    assertDeploymentTarget(built, `${name} ${dep.version}`);
   }
 
-  const archive = join(work, `ffmpeg-${target.version}.tar.xz`);
-  console.log(`[fetch-ffmpeg] downloading ${target.url}`);
-  execFileSync("curl", ["-fsSL", "-o", archive, target.url], { stdio: "inherit" });
-
-  const digest = execFileSync("shasum", ["-a", "256", archive], { encoding: "utf8" }).split(/\s+/)[0];
-  if (digest !== target.sha256) {
-    fail(`ソースの sha256 が想定と違います。\n  期待: ${target.sha256}\n  実際: ${digest}`);
-  }
-  console.log(`[fetch-ffmpeg] sha256 ok (${digest})`);
-
-  console.log("[fetch-ffmpeg] extracting");
-  execFileSync("tar", ["xf", archive, "-C", work], { stdio: "inherit" });
-  const sourceDir = join(work, `ffmpeg-${target.version}`);
+  const sourceDir = downloadAndExtract({
+    url: target.url,
+    sha256: target.sha256,
+    dir: `ffmpeg-${target.version}`,
+  });
 
   const prefix = join(work, "out");
   const configureArgs = [
@@ -210,21 +296,20 @@ function buildMacos() {
     "--enable-libvpx",
     "--enable-libopus",
     "--pkg-config-flags=--static",
-    `--extra-cflags=-I${HOMEBREW}/include`,
-    `--extra-ldflags=-L${staticLibs} -L${HOMEBREW}/lib`,
+    `--extra-cflags=-I${join(depsPrefix, "include")}`,
+    `--extra-ldflags=-L${join(depsPrefix, "lib")}`,
   ];
 
-  console.log("[fetch-ffmpeg] configuring");
+  console.log("[fetch-ffmpeg] configuring ffmpeg");
   execFileSync("./configure", configureArgs, {
     cwd: sourceDir,
     stdio: "inherit",
-    env: { ...process.env, PKG_CONFIG_PATH: join(HOMEBREW, "lib", "pkgconfig") },
+    env: { ...buildEnv, PKG_CONFIG_PATH: join(depsPrefix, "lib", "pkgconfig") },
   });
 
-  const jobs = execFileSync("sysctl", ["-n", "hw.ncpu"], { encoding: "utf8" }).trim();
-  console.log(`[fetch-ffmpeg] building (make -j${jobs})。10 分ほどかかります`);
-  execFileSync("make", [`-j${jobs}`], { cwd: sourceDir, stdio: "inherit" });
-  execFileSync("make", ["install"], { cwd: sourceDir, stdio: "inherit" });
+  console.log(`[fetch-ffmpeg] building ffmpeg (make -j${jobs})。10 分ほどかかります`);
+  execFileSync("make", [`-j${jobs}`], { cwd: sourceDir, stdio: "inherit", env: buildEnv });
+  execFileSync("make", ["install"], { cwd: sourceDir, stdio: "inherit", env: buildEnv });
 
   for (const tool of ["ffmpeg", "ffprobe"]) {
     const from = join(prefix, "bin", tool);
@@ -249,6 +334,7 @@ function buildMacos() {
         ].join("\n"),
       );
     }
+    assertDeploymentTarget(to, tool);
     console.log(`[fetch-ffmpeg] placed ${to}`);
   }
 
@@ -259,8 +345,8 @@ function buildMacos() {
   // 静的リンクしたライブラリの条文も配布物へ入れる。どちらも BSD 系で、
   // バイナリ配布時に著作権表示とライセンス文の同梱を求めている。
   const staticNotices = [
-    { name: "libvpx", path: join(HOMEBREW, "opt", "libvpx", "LICENSE") },
-    { name: "opus", path: join(HOMEBREW, "opt", "opus", "COPYING") },
+    { name: `libvpx ${MACOS_DEPS.libvpx.version}`, path: join(libvpxSource, MACOS_DEPS.libvpx.licenseFile) },
+    { name: `opus ${MACOS_DEPS.opus.version}`, path: join(opusSource, MACOS_DEPS.opus.licenseFile) },
   ];
   const staticTexts = staticNotices.map(({ name, path }) => {
     if (!existsSync(path)) {
@@ -285,7 +371,14 @@ function buildMacos() {
   );
   console.log("[fetch-ffmpeg] placed FFMPEG-STATIC-LIBS-LICENSE.txt");
 
-  return [`source: ${target.url}`, `sha256: ${target.sha256}`].join("\n");
+  return [
+    `source: ${target.url}`,
+    `sha256: ${target.sha256}`,
+    `deployment target: macOS ${target.deploymentTarget}`,
+    "",
+    "statically linked:",
+    ...Object.entries(MACOS_DEPS).map(([name, dep]) => `  ${name} ${dep.version}: ${dep.url} (sha256 ${dep.sha256})`),
+  ].join("\n");
 }
 
 const sourceInfo = process.platform === "win32" ? await fetchWindows() : buildMacos();

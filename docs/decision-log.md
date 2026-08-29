@@ -1034,6 +1034,8 @@ Phase 2 に置いた出力形式（WebM VP9 / MP4 AV1 / MP4 HEVC）のうち、�
 - バージョンは固定し、tarball の sha256 を検証する
 - H.264 と AAC は OS 内蔵の VideoToolbox / AudioToolbox を使い、追加ライブラリを持ち込まない
 - WebM 出力に必要な libvpx と libopus（いずれも BSD）だけを静的リンクし、条文を `FFMPEG-STATIC-LIBS-LICENSE.txt` として同梱する
+- 依存ライブラリも Homebrew のものは使わず、バージョンを固定してソースからビルドする
+- 最低動作 OS は macOS 11 に固定し、ビルド後に `otool -l` の `minos` を検査する
 - 自動検出で Homebrew の dylib を拾う機能（xcb / xlib / lzma）は明示的に無効化し、ビルド後に `otool -L` でシステム外の依存が無いことを検査する
 - 配布対象は Apple Silicon（`aarch64-apple-darwin`）とする
 
@@ -1042,12 +1044,13 @@ Phase 2 に置いた出力形式（WebM VP9 / MP4 AV1 / MP4 HEVC）のうち、�
 - 購入者に事前準備を求める形は、有償配布では問い合わせの主要因になる
 - Homebrew のビルドは GPL 構成（`libx264` / `libx265` 入り）であり、`D-18` の方針では同梱できない
 - Homebrew の dylib へ動的リンクした状態で配ると、購入者の環境では起動しない。静的リンクと依存検査でこれを構造的に防ぐ
+- デプロイメントターゲットを指定しないと、ビルドしたマシンの OS バージョン（macOS 26）が最低要件として焼き込まれる。この状態で配ると「アプリは起動するが動画モードだけ動かない」という最も分かりにくい壊れ方をする。Homebrew の `libvpx.a` / `libopus.a` も同じ問題を持つため、依存ごとソースからビルドする
 - Intel 版は x86_64 の依存ライブラリを別途用意する必要があり、費用と手間に対して需要が読めない
 
 ### 影響
 
 - `scripts/fetch-ffmpeg.mjs` が OS ごとに分岐する（Windows は取得、macOS はビルド）
-- macOS のビルドには Xcode Command Line Tools と `brew install libvpx opus pkg-config` が必要
+- macOS のビルドには Xcode Command Line Tools と `pkg-config` が必要。所要時間は 15 分程度
 - macOS 版 dmg が 5.7 MB から 27 MB になった
 - 商品ページに Apple Silicon 専用である旨の記載が必要
 

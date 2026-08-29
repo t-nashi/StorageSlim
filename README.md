@@ -83,10 +83,12 @@ Windows:
 
 macOS:
 
-- LGPL 構成の配布ビルドが存在しないため、公式ソース（`https://ffmpeg.org/releases/`）から自前でビルドします。sha256 を検証し、GPL 構成でないことと、システム外のライブラリへ依存していないことをビルド後に確認します。初回は 10 分程度かかります。
-- Xcode Command Line Tools と、WebM 出力用の libvpx / libopus が必要です。`brew install libvpx opus pkg-config` で用意してください。静的リンクするため、利用者の環境に Homebrew は要りません。
+- LGPL 構成の配布ビルドが存在しないため、公式ソース（`https://ffmpeg.org/releases/`）から自前でビルドします。バージョンは固定し、sha256 を検証します。GPL 構成でないことと、システム外のライブラリへ依存していないことをビルド後に確認します。libvpx と opus のビルドも含めて 15 分程度かかります。
+- WebM 出力に必要な libvpx と libopus も、同じ手順の中でソースからビルドして静的リンクします。Homebrew のものは使いません。ビルドしたマシンの OS バージョンが最低要件として焼き込まれており、古い macOS で動かなくなるためです。
+- 必要なのは Xcode Command Line Tools と `pkg-config` だけです（`brew install pkg-config`）。
+- 最低動作 OS は macOS 11 で固定しています。ビルド後に `otool -l` で検査し、想定と違えば中断します。
 - H.264 と AAC は OS 内蔵の VideoToolbox / AudioToolbox を使うため、追加のライブラリは不要です。
-- ffmpeg / ffprobe 合わせて約 48 MB です。
+- ffmpeg / ffprobe 合わせて約 48 MB です。dmg は約 27 MB になります。
 
 同梱ビルドには `libx264` が入らないため、H.264 は OS / ハードウェアエンコーダ（NVENC / QSV / AMF / Media Foundation / VideoToolbox）を使います。実測では**同一品質なら x264 より 15-25% 大きく**なります。圧縮率を重視する場合は、自分で用意した GPL ビルドを `ffmpeg のパス` に指定してください。計測値は [docs/format-matrix-video.md](docs/format-matrix-video.md) にあります。
 

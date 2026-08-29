@@ -288,7 +288,7 @@ FFmpeg が必要です。Windows / macOS とも同梱します。
 npm run ffmpeg
 ```
 
-これを実行してから `npm run tauri build` します。未実行のままビルドすると `resource path binaries\FFMPEG-LICENSE.txt doesn't exist` のようなエラーで止まります。macOS はソースからビルドするため、初回は 10 分程度かかります（要 `brew install libvpx opus pkg-config`）。
+これを実行してから `npm run tauri build` します。未実行のままビルドすると `resource path binaries\FFMPEG-LICENSE.txt doesn't exist` のようなエラーで止まります。macOS は ffmpeg と依存ライブラリをソースからビルドするため、15 分程度かかります（要 `brew install pkg-config`）。
 
 同梱バイナリが無い状態で確認する場合、Finder から起動した `.app` は launchd の最小 PATH（`/usr/bin:/bin:/usr/sbin:/sbin`）しか継承しないため、シェルの `PATH` に入れただけでは見つかりません。そのため `/opt/homebrew/bin` / `/usr/local/bin` / `/usr/bin` を既知の置き場所として最後に試します（経路は `system`）。ここに無い場合は設定の詳細 → `ffmpeg のパス` を指定します。
 
