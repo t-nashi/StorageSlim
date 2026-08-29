@@ -248,7 +248,6 @@
 完了条件:
 
 - `docs/requirements.md` に最終対応マトリクスが反映されている
-- `docs/open-questions.md` から該当項目が削除されている
 
 依存:
 
@@ -282,7 +281,6 @@
 
 ## 関連ドキュメント
 - docs/requirements.md
-- docs/open-questions.md
 - docs/decision-log.md
 ```
 

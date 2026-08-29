@@ -3,7 +3,7 @@
 最終更新: 2026-08-23
 
 `samples/` の画像を使った動作確認・回帰確認の手順です。
-起動や基本 UI の確認は `docs/debug-sheet.md`、形式ごとの仕様は `docs/format-matrix.md` を参照してください。
+形式ごとの仕様は `docs/format-matrix.md` を参照してください。
 
 ## 0. 準備
 
