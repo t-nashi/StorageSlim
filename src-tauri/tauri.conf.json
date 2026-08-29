@@ -27,6 +27,7 @@
     "active": true,
     "targets": "all",
     "resources": {
+      "../docs/buyer-readme.txt": "はじめにお読みください.txt",
       "../LICENSE": "LICENSE",
       "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
     },
