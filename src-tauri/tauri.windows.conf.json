@@ -12,6 +12,14 @@
       "binaries/FFMPEG-LICENSE.txt": "FFMPEG-LICENSE.txt",
       "binaries/FFMPEG-GPL-3.0.txt": "FFMPEG-GPL-3.0.txt",
       "binaries/FFMPEG-BUILD-INFO.txt": "FFMPEG-BUILD-INFO.txt"
+    },
+    "windows": {
+      "nsis": {
+        "languages": [
+          "Japanese",
+          "English"
+        ]
+      }
     }
   }
 }
