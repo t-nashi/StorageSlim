@@ -44,6 +44,7 @@ use std::{
 #[cfg(windows)]
 use windows_sys::Win32::{Foundation::FILETIME, Storage::FileSystem::SetFileTime};
 
+mod exif;
 mod video;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +140,8 @@ struct QualitySettings {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum MetadataMode {
     Strip,
+    /// 撮影日時と向きだけを残し、GPS を含む他のメタデータは落とす。
+    DateOnly,
     Keep,
 }
 
@@ -545,7 +548,7 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
 
     let mut warnings = Vec::new();
     if matches!(settings.metadata_mode, MetadataMode::Keep) {
-        warnings.push("メタデータ保持はベストエフォート".to_string());
+        warnings.push("EXIF 以外 (XMP / ICC プロファイルなど) は保持されない".to_string());
     }
 
     if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) && output_format == OutputFormat::Original {
@@ -648,12 +651,29 @@ fn process_static_image(
     output_path: &Path,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
+    // デコードより先に取り出し、元ファイルのバイト列を手放してから画像を読む。
+    // 元ファイルとデコード後の画像を同時にメモリへ載せないため。
+    let source_exif = read_source_exif(entry, settings, warnings);
+
     let image = decode_input_image(entry, settings.decode_limit_mb)?;
     let resized = resize_dynamic_image(image, &settings.resize);
     let (width, height) = resized.dimensions();
     check_encoder_dimensions(width, height, output_format, warnings)?;
 
-    let encoded = encode_static_image(&resized, settings, output_format)?;
+    let mut encoded = encode_static_image(&resized, settings, output_format)?;
+    if let Some(mut tiff) = source_exif {
+        // リサイズすると EXIF の寸法が実際と食い違うため合わせる。
+        exif::patch_dimensions(&mut tiff, width, height);
+        match exif::embed(&encoded, output_format, &tiff, width, height) {
+            Some(with_exif) => encoded = with_exif,
+            None => warnings.push(format!(
+                "{} へは EXIF を埋め込めないため撮影日時は引き継がれない",
+                output_format_label(entry, output_format)
+            )),
+        }
+    }
+
+    // EXIF を足したあとの大きさで比べる。埋め込み分だけ出力は大きくなる。
     if can_fall_back_to_source_copy(entry, settings, encoded.len() as u64) {
         warnings.push("再圧縮すると大きくなるため元ファイルをコピー".to_string());
         return copy_source_as_output(entry, output_path);
@@ -663,6 +683,43 @@ fn process_static_image(
         .with_context(|| format!("failed to write output: {}", output_path.display()))?;
 
     Ok(())
+}
+
+/// メタデータ設定に応じて、元ファイルから埋め戻す EXIF を用意する。
+///
+/// 取り出せない・入っていない場合は `None`。EXIF が無いことは失敗ではないため、
+/// エラーにはせず警告に落とす。
+fn read_source_exif(
+    entry: &InputEntry,
+    settings: &BatchSettings,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<u8>> {
+    if matches!(settings.metadata_mode, MetadataMode::Strip) {
+        return None;
+    }
+
+    // 同梱の HEIF デコーダは EXIF を露出しないため取り出せない。
+    if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) {
+        warnings.push("HEIC / HEIF からは EXIF を取り出せないため撮影日時は引き継がれない".to_string());
+        return None;
+    }
+
+    let bytes = match fs::read(&entry.source_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return None,
+    };
+    let tiff = exif::extract(&bytes, &entry.format)?;
+    drop(bytes);
+
+    if matches!(settings.metadata_mode, MetadataMode::DateOnly) {
+        let filtered = exif::keep_date_and_orientation(&tiff);
+        if filtered.is_none() {
+            warnings.push("元ファイルに撮影日時が入っていない".to_string());
+        }
+        return filtered;
+    }
+
+    Some(tiff)
 }
 
 /// エンコード結果をいったんメモリ上に組み立てて返す。
@@ -754,8 +811,9 @@ fn can_fall_back_to_source_copy(
     if !matches!(settings.output_format, OutputFormat::Original) {
         return false;
     }
-    // メタデータ削除は再エンコードによって実現しているため、コピーでは満たせない。
-    if matches!(settings.metadata_mode, MetadataMode::Strip) {
+    // メタデータ削除と撮影日のみ保持は再エンコードによって実現しているため、
+    // コピーでは満たせない。元ファイルをそのまま渡すと GPS まで残ってしまう。
+    if !matches!(settings.metadata_mode, MetadataMode::Keep) {
         return false;
     }
     // リサイズで寸法が変わる指定なら、コピーでは満たせない。
@@ -778,8 +836,10 @@ fn process_heif_original_copy(
         ));
     }
 
-    if matches!(settings.metadata_mode, MetadataMode::Strip) {
-        warnings.push("HEIC / HEIF のオリジナル維持出力ではメタデータ削除は未対応です。".to_string());
+    if !matches!(settings.metadata_mode, MetadataMode::Keep) {
+        warnings.push(
+            "HEIC / HEIF のオリジナル維持出力ではメタデータの削除・絞り込みは未対応です。".to_string(),
+        );
     }
 
     warnings.push("HEIC / HEIF のオリジナル維持出力は再圧縮せずコピーします。".to_string());
@@ -792,6 +852,10 @@ fn process_animated_gif(
     output_path: &Path,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
+    if !matches!(settings.metadata_mode, MetadataMode::Strip) {
+        warnings.push("GIF は EXIF を持てないため撮影日時は引き継がれない".to_string());
+    }
+
     let file = File::open(&entry.source_path)?;
     let mut decoder = DecodeOptions::new();
     decoder.set_color_output(ColorOutput::RGBA);
@@ -1452,6 +1516,67 @@ mod tests {
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].width, Some(10));
         assert_eq!(response.entries[0].height, Some(8));
+    }
+
+    #[test]
+    fn keeps_capture_date_and_drops_gps_end_to_end() {
+        use crate::exif::fixtures::{find_ascii, sample_tiff, DATETIME_ORIGINAL, MAKER_NOTE};
+
+        let dir = temp_dir("process-exif");
+        let input = dir.join("photo.jpg");
+
+        // EXIF 付きの JPEG を用意する。image クレートは EXIF を書けないため、
+        // エンコード後に埋め込む。
+        let image = ImageBuffer::<Rgba<u8>, _>::from_pixel(40, 30, Rgba([10, 200, 90, 255]));
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, 90)
+            .encode_image(&DynamicImage::ImageRgba8(image))
+            .unwrap();
+        let source = crate::exif::embed(&encoded, OutputFormat::Jpeg, &sample_tiff(), 40, 30)
+            .expect("テスト用の EXIF を埋め込めるはず");
+        fs::write(&input, &source).unwrap();
+
+        let inspect = inspect_inputs_impl(vec![input.to_string_lossy().to_string()]).unwrap();
+        let entry = inspect.entries[0].clone();
+        let settings = BatchSettings {
+            output_format: OutputFormat::Webp,
+            output_mode: OutputMode::Custom,
+            custom_output_dir: Some(dir.join("output").to_string_lossy().to_string()),
+            overwrite: false,
+            resize: ResizeSettings {
+                mode: ResizeMode::Width,
+                value: Some(20),
+                unit: ResizeUnit::Px,
+            },
+            quality: QualitySettings {
+                jpeg_quality: 80,
+                webp_quality: 80.0,
+                avif_quality: 50,
+                png_compression: 6,
+                gif_colors: 128,
+            },
+            metadata_mode: MetadataMode::DateOnly,
+            timestamps: TimestampSettings {
+                preserve_creation_time: false,
+                preserve_last_write_time: false,
+            },
+            decode_limit_mb: DECODE_LIMIT_DEFAULT_MB,
+        };
+        let output_root = resolve_output_root(&settings).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+
+        let result = process_one(&entry, &settings, &output_root).unwrap();
+        assert!(result.success);
+
+        let output = fs::read(result.output_path.unwrap()).unwrap();
+        let tiff = crate::exif::extract(&output, &InputFormat::Webp)
+            .expect("出力へ EXIF が引き継がれるはず");
+        assert!(find_ascii(&tiff, DATETIME_ORIGINAL), "撮影日時が残る");
+        assert!(!find_ascii(&tiff, MAKER_NOTE), "メーカーノートは落ちる");
+        assert!(
+            !find_ascii(&output, MAKER_NOTE),
+            "出力ファイル全体にもメーカーノートは残らない"
+        );
     }
 
     #[test]
