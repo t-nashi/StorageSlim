@@ -13,7 +13,20 @@ export const resizeUnitOptions: Array<ChoiceOption<ResizeUnit>> = [
   { value: "percent", label: "%" },
 ];
 
-export const metadataOptions: Array<ChoiceOption<BatchSettings["metadataMode"]>> = [
+/**
+ * 画像モードのメタデータ選択肢。
+ *
+ * 「撮影日のみ」は、クラウドの写真サービスへ上げ直しても撮影日で並ぶようにしつつ、
+ * GPS を残さないための選択肢。既定にはせず、明示的に選ばせる。
+ */
+export const imageMetadataOptions: Array<ChoiceOption<BatchSettings["metadataMode"]>> = [
+  { value: "strip", label: "削除する" },
+  { value: "dateOnly", label: "撮影日のみ" },
+  { value: "keep", label: "保持する" },
+];
+
+/** 動画モードのメタデータ選択肢。撮影日のみの絞り込みは画像だけの機能。 */
+export const videoMetadataOptions: Array<ChoiceOption<BatchSettings["metadataMode"]>> = [
   { value: "strip", label: "削除する" },
   { value: "keep", label: "保持する" },
 ];

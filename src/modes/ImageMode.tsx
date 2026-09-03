@@ -153,7 +153,9 @@ function normalizeSettings(raw: unknown, defaultOutputDir: string): BatchSetting
       gifColors: clamp(Number(quality.gifColors ?? fallback.quality.gifColors), 2, 256),
     },
     metadataMode:
-      candidate.metadataMode === "keep" || candidate.metadataMode === "strip"
+      candidate.metadataMode === "keep" ||
+      candidate.metadataMode === "dateOnly" ||
+      candidate.metadataMode === "strip"
         ? candidate.metadataMode
         : fallback.metadataMode,
     timestamps: {

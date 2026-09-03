@@ -15,7 +15,7 @@ export type OutputFormat =
   | "webp"
   | "avif";
 
-export type MetadataMode = "strip" | "keep";
+export type MetadataMode = "strip" | "dateOnly" | "keep";
 export type OutputMode = "desktopDefault" | "custom";
 export type ResizeMode = "none" | "width" | "height" | "longEdge";
 export type ResizeUnit = "px" | "percent";
