@@ -164,7 +164,7 @@ StorageSlim は MIT ライセンスの OSS です。以下の手順でビルド�
 手順（Windows は PowerShell、macOS は Terminal.app などのシェル）:
 
 ```powershell
-git clone https://github.com/<owner>/StorageSlim.git
+git clone https://github.com/t-nashi/StorageSlim.git
 cd StorageSlim
 npm install
 npm run tauri build
