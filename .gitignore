@@ -16,6 +16,9 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Claude Code のローカル設定と起動定義。個人の環境に依存する。
+.claude/
 .DS_Store
 *.suo
 *.ntvs*
