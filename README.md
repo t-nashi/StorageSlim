@@ -4,6 +4,16 @@ StorageSlim は、画像と動画をローカル PC 上で圧縮・リサイズ�
 
 `画像圧縮` と `動画圧縮` はモードとして切り替えて使います。1 つの画面に混在させず、設定項目もそれぞれ専用です。
 
+![画像圧縮モードの画面。左に入力一覧、右に処理結果と削減量が並ぶ](docs/images/image-mode.webp)
+
+![動画圧縮モードの画面。品質プリセットとフレームレート上限を選べる](docs/images/video-mode.webp)
+
+## 入手方法
+
+自分でビルドすれば無償で使えます（[手順](#自分でビルドして使う)）。ビルド済みのものは BOOTH で頒布しています。
+
+- BOOTH: https://t-nashi.booth.pm/items/8783008
+
 ## 現在の位置づけ
 
 - ステータス: MVP 開発中
@@ -164,7 +174,7 @@ StorageSlim は MIT ライセンスの OSS です。以下の手順でビルド�
 手順（Windows は PowerShell、macOS は Terminal.app などのシェル）:
 
 ```powershell
-git clone https://github.com/<owner>/StorageSlim.git
+git clone https://github.com/t-nashi/StorageSlim.git
 cd StorageSlim
 npm install
 npm run tauri build
@@ -188,6 +198,13 @@ npm run tauri build
 
 - 初回ビルドは依存クレート（rav1e などの AVIF エンコーダを含む）のコンパイルに時間がかかります。マシンによっては 10〜30 分程度かかりますが、2 回目以降はキャッシュが効きます。
 - ビルド済みファイルには署名を付けていないため、Windows では初回起動時に SmartScreen の警告が表示されます。`詳細情報` → `実行` で起動できます。
+
+### ビルド済みバイナリの頒布について
+
+上記の手順を踏むのが面倒な場合のために、ビルド済みのものを BOOTH で有償頒布しています。ビルド作業の代行であり、ソフトウェア自体は MIT ライセンスのまま、上記の手順で無償で入手できます。
+
+- BOOTH: https://t-nashi.booth.pm/items/8783008
+- 頒布しているバイナリはタグ `v0.1.0` から作成しています。同じものをビルドする場合は `git checkout v0.1.0` してください。
 
 ## 開発環境
 
