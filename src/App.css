@@ -1218,6 +1218,11 @@ td {
   flex-shrink: 0;
   accent-color: #4bb3c6;
   cursor: pointer;
+  /* align-items: center は行ボックスの中心で揃うが、フォントは上側の
+     アセンダが下側のディセンダより大きく、文字の見た目の中心は行ボックスの
+     中心より下にある。そのぶんだけ下げて光学的に揃える。 */
+  position: relative;
+  top: 1px;
 }
 
 .row-select:disabled {
