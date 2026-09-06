@@ -538,6 +538,11 @@ export function VideoMode({
     setExcludedCount(0);
   }
 
+  /** 入力一覧から 1 件だけ外す。読み込み直しをせずに対象を絞れるようにする。 */
+  function removeEntry(id: string) {
+    setEntries((current) => current.filter((entry) => entry.id !== id));
+  }
+
   function clearResults() {
     setResults([]);
     setProgress({ ...INITIAL_PROGRESS });
@@ -782,12 +787,13 @@ export function VideoMode({
                       <th>尺</th>
                       <th>サイズ</th>
                       <th>状態</th>
+                      <th className="cell-remove">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {entries.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="empty-cell">
+                        <td colSpan={7} className="empty-cell">
                           まだファイルがありません
                         </td>
                       </tr>
@@ -828,6 +834,18 @@ export function VideoMode({
                                 </span>
                               ))}
                             </div>
+                          </td>
+                          <td className="cell-remove">
+                            <button
+                              type="button"
+                              className="ghost row-remove"
+                              disabled={inputLoading || busy}
+                              title="この項目を入力一覧から外す"
+                              aria-label={`${entry.fileName} を入力一覧から外す`}
+                              onClick={() => removeEntry(entry.id)}
+                            >
+                              ×
+                            </button>
                           </td>
                         </tr>
                       ))

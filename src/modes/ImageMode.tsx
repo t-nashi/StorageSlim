@@ -744,6 +744,11 @@ export function ImageMode({
     setSkipped([]);
   }
 
+  /** 入力一覧から 1 件だけ外す。読み込み直しをせずに対象を絞れるようにする。 */
+  function removeEntry(id: string) {
+    setEntries((current) => current.filter((entry) => entry.id !== id));
+  }
+
   /** 結果一覧と、それに紐づく進捗表示をまとめて起動直後の状態へ戻す。 */
   function clearResults() {
     setResults([]);
@@ -978,12 +983,13 @@ export function ImageMode({
                       <th>寸法</th>
                       <th>サイズ</th>
                       <th>状態</th>
+                      <th className="cell-remove">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {entries.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="empty-cell">
+                        <td colSpan={6} className="empty-cell">
                           まだファイルがありません
                         </td>
                       </tr>
@@ -1031,6 +1037,18 @@ export function ImageMode({
                                 </span>
                               ))}
                             </div>
+                          </td>
+                          <td className="cell-remove">
+                            <button
+                              type="button"
+                              className="ghost row-remove"
+                              disabled={inputLoading || busy}
+                              title="この項目を入力一覧から外す"
+                              aria-label={`${entry.fileName} を入力一覧から外す`}
+                              onClick={() => removeEntry(entry.id)}
+                            >
+                              ×
+                            </button>
                           </td>
                         </tr>
                         );
