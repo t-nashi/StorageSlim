@@ -220,6 +220,36 @@ npm run tauri build
 npm install
 ```
 
+### 差分が無いのに `modified` と表示される場合
+
+`git status` にファイルが出るのに `git diff` が空、という状態になることがある。中身は変わっておらず、原因は改行コードの扱い。
+
+Windows で `core.autocrlf=true` の場合、Git はチェックアウト時に CRLF で書き出した前提でファイルサイズを index に記録する。エディタや外部ツールがそのファイルを LF で保存し直すとサイズがずれ、内容が同一でも `modified` と判定され、`git status` から消えなくなる。コミット時は CRLF から LF へ正規化されるため、内容比較では差分ゼロになる。
+
+見分け方。blob ハッシュが index / HEAD と一致すれば、内容の差分は無い。
+
+```powershell
+git diff --stat -- <path>
+git hash-object <path>
+git rev-parse HEAD:<path>
+```
+
+`git ls-files --eol <path>` も併せて見る。周囲のファイルが `w/crlf` なのに対象だけ `w/lf` になっていれば、この現象。
+
+```powershell
+git ls-files --eol <path>
+```
+
+対処。内容が同一であることを確認したうえで、チェックアウトし直す。
+
+```powershell
+git restore <path>
+```
+
+恒久対策として `.gitattributes` で改行を固定する方法もあるが、導入した時点で全テキストファイルが一度に書き換わり、大きな差分が発生する。方針を決めたうえで、単独のコミットとして入れること。
+
+実例: 2026-09-06 に `src-tauri/Cargo.toml` がこの状態になった。内容は HEAD と完全に一致しており、`git restore` で解消した。
+
 ## Debug 実行
 
 開発中にログやクラッシュ原因を確認しやすい実行方法です。Windows では debug exe 起動時にターミナルウィンドウも表示されることがあります。
