@@ -1225,6 +1225,13 @@ td {
   opacity: 0.45;
 }
 
+/* 見出しの一括選択。行のチェックと同じ見た目のまま、タイトルとの間隔だけ
+   title-inline の gap に任せる。 */
+.select-all {
+  width: 15px;
+  height: 15px;
+}
+
 .file-cell strong,
 .file-cell small {
   min-width: 0;

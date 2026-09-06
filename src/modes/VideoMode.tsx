@@ -9,7 +9,7 @@ import { AppHeader } from "../components/AppHeader";
 import { PathPickerField } from "../components/PathPickerField";
 import { ProgressPanel } from "../components/ProgressPanel";
 import { SplitArea } from "../components/SplitArea";
-import { InlineLoading, SkippedList, TablePanel, TableScroll } from "../components/TablePanel";
+import { InlineLoading, SelectAllCheckbox, SkippedList, TablePanel, TableScroll } from "../components/TablePanel";
 import { VideoSettingsPanel } from "../components/VideoSettingsPanel";
 import { useDropTarget } from "../hooks/useDropTarget";
 import {
@@ -408,6 +408,8 @@ export function VideoMode({
     [entries, uncheckedPaths],
   );
   const uncheckedCount = entries.length - targetEntries.length;
+  const allChecked = entries.length > 0 && uncheckedCount === 0;
+  const someUnchecked = uncheckedCount > 0 && uncheckedCount < entries.length;
 
   const resizeValueMissing = settings ? isResizeValueMissing(settings.resize) : true;
   // 出力形式ごとに使えるエンコーダが違うため、選択中の形式で判定する。
@@ -562,6 +564,11 @@ export function VideoMode({
    * 一覧からは外さず、チェックが外れている間だけ圧縮対象から除く。
    * 再読込で `id` は振り直されるため、キーには安定した `sourcePath` を使う。
    */
+  /** 見出しのチェックで全行をまとめて切り替える。 */
+  function toggleAllChecked(checked: boolean) {
+    setUncheckedPaths(checked ? new Set() : new Set(entries.map((entry) => entry.sourcePath)));
+  }
+
   function toggleEntryChecked(sourcePath: string, checked: boolean) {
     setUncheckedPaths((current) => {
       const next = new Set(current);
@@ -779,6 +786,15 @@ export function VideoMode({
 
             <div className="workspace-grid">
               <TablePanel
+                lead={
+                  <SelectAllCheckbox
+                    checked={allChecked}
+                    indeterminate={someUnchecked}
+                    disabled={entries.length === 0 || inputLoading || busy}
+                    label="すべての入力を圧縮対象にする"
+                    onChange={toggleAllChecked}
+                  />
+                }
                 title="入力一覧"
                 count={entries.length}
                 empty={entries.length === 0}

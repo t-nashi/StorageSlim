@@ -12,7 +12,7 @@ import { ImageSettingsPanel } from "../components/ImageSettingsPanel";
 import { PathPickerField } from "../components/PathPickerField";
 import { ProgressPanel } from "../components/ProgressPanel";
 import { SplitArea } from "../components/SplitArea";
-import { InlineLoading, SkippedList, TablePanel, TableScroll } from "../components/TablePanel";
+import { InlineLoading, SelectAllCheckbox, SkippedList, TablePanel, TableScroll } from "../components/TablePanel";
 import { useDropTarget } from "../hooks/useDropTarget";
 import { clamp, formatBytes, formatDimension, formatSavedDelta } from "../lib/format";
 import { deriveDefaultInputDir, fileNameFromPath, joinNativePath } from "../lib/paths";
@@ -542,6 +542,8 @@ export function ImageMode({
     [entries, uncheckedPaths],
   );
   const uncheckedCount = entries.length - targetEntries.length;
+  const allChecked = entries.length > 0 && uncheckedCount === 0;
+  const someUnchecked = uncheckedCount > 0 && uncheckedCount < entries.length;
 
   const allowedOutputs = useMemo(() => {
     const map = new Map<OutputFormat, string | null>();
@@ -768,6 +770,11 @@ export function ImageMode({
    * 一覧からは外さず、チェックが外れている間だけ圧縮対象から除く。
    * 再読込で `id` は振り直されるため、キーには安定した `sourcePath` を使う。
    */
+  /** 見出しのチェックで全行をまとめて切り替える。 */
+  function toggleAllChecked(checked: boolean) {
+    setUncheckedPaths(checked ? new Set() : new Set(entries.map((entry) => entry.sourcePath)));
+  }
+
   function toggleEntryChecked(sourcePath: string, checked: boolean) {
     setUncheckedPaths((current) => {
       const next = new Set(current);
@@ -981,6 +988,15 @@ export function ImageMode({
 
             <div className="workspace-grid">
               <TablePanel
+                lead={
+                  <SelectAllCheckbox
+                    checked={allChecked}
+                    indeterminate={someUnchecked}
+                    disabled={entries.length === 0 || inputLoading || busy}
+                    label="すべての入力を圧縮対象にする"
+                    onChange={toggleAllChecked}
+                  />
+                }
                 title="入力一覧"
                 count={entries.length}
                 empty={entries.length === 0}
