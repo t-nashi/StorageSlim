@@ -1072,30 +1072,6 @@ input:focus,
   flex-shrink: 0;
 }
 
-/* 行ごとの除外ボタン。列幅を食わないよう内容幅に収め、正方形に近い見た目にする。 */
-.data-table th.cell-remove,
-.data-table td.cell-remove {
-  width: 1px;
-  text-align: center;
-}
-
-.data-table th.cell-remove {
-  /* 見出しは付けるが視覚的な主張は抑える。 */
-  font-size: 0.62rem;
-  opacity: 0.55;
-}
-
-.row-remove {
-  padding: 0.1rem 0.42rem;
-  font-size: 0.9rem;
-  line-height: 1.2;
-  border-radius: 8px;
-}
-
-.row-remove:not(:disabled):hover {
-  border-color: rgba(255, 107, 107, 0.5);
-  color: #ffbbbb;
-}
 
 .skip-details {
   margin-bottom: 12px;
@@ -1222,6 +1198,31 @@ td {
      狭い画面ではここが表の最小幅を決めて横スクロールへ倒す。 */
   min-width: 180px;
   max-width: none;
+}
+
+/* チェックボックスとファイル名だけの行。パス行は file-cell 直下に残すため、
+   ここで字下げしてもパスの左端はずれない。 */
+.file-name-row {
+  display: flex;
+  align-items: center;
+  /* 詰まって押しにくくならず、名前から離れて見えない程度の間隔。 */
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 行ごとの圧縮対象チェック。既定は on で、off にすると実行時に対象から外れる。 */
+.row-select {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: #4bb3c6;
+  cursor: pointer;
+}
+
+.row-select:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .file-cell strong,

@@ -200,6 +200,8 @@ export function VideoMode({
   onModeChange,
   entries,
   setEntries,
+  uncheckedPaths,
+  setUncheckedPaths,
   skipped,
   setSkipped,
   excludedCount,
@@ -213,6 +215,8 @@ export function VideoMode({
   onModeChange: (next: AppMode) => void;
   entries: VideoInputEntry[];
   setEntries: Dispatch<SetStateAction<VideoInputEntry[]>>;
+  uncheckedPaths: Set<string>;
+  setUncheckedPaths: Dispatch<SetStateAction<Set<string>>>;
   skipped: SkippedItem[];
   setSkipped: Dispatch<SetStateAction<SkippedItem[]>>;
   excludedCount: number;
@@ -393,6 +397,18 @@ export function VideoMode({
     [results],
   );
 
+  /**
+   * チェックが入っている入力だけを集めたもの。
+   *
+   * 圧縮対象と進捗の総数はこちらを見る。チェックを外した入力は一覧に残すが、
+   * 処理からは完全に外す。
+   */
+  const targetEntries = useMemo(
+    () => entries.filter((entry) => !uncheckedPaths.has(entry.sourcePath)),
+    [entries, uncheckedPaths],
+  );
+  const uncheckedCount = entries.length - targetEntries.length;
+
   const resizeValueMissing = settings ? isResizeValueMissing(settings.resize) : true;
   // 出力形式ごとに使えるエンコーダが違うため、選択中の形式で判定する。
   const formatSupport =
@@ -400,7 +416,7 @@ export function VideoMode({
   const ffmpegReady = environment?.available === true && formatSupport?.available === true;
   const notReadyMessage = environment?.message ?? formatSupport?.message ?? null;
   const canRunBatch =
-    entries.length > 0 && !busy && !inputLoading && !resizeValueMissing && ffmpegReady;
+    targetEntries.length > 0 && !busy && !inputLoading && !resizeValueMissing && ffmpegReady;
 
   async function addPaths(paths: string[]) {
     if (paths.length === 0) {
@@ -495,7 +511,7 @@ export function VideoMode({
   }
 
   async function runBatch() {
-    if (!settings || entries.length === 0 || busy) {
+    if (!settings || targetEntries.length === 0 || busy) {
       return;
     }
     if (resizeValueMissing) {
@@ -513,14 +529,14 @@ export function VideoMode({
     setErrorMessage(null);
     setProgress({
       completed: 0,
-      total: entries.length,
+      total: targetEntries.length,
       currentPath: null,
       state: "running",
       currentFilePercent: 0,
     });
     try {
       const response = await invoke<VideoProcessResponse>("process_video_batch", {
-        request: { entries, settings },
+        request: { entries: targetEntries, settings },
       });
       setResults(response.results);
     } catch (error) {
@@ -535,13 +551,27 @@ export function VideoMode({
 
   function clearInputs() {
     setEntries([]);
+    setUncheckedPaths(new Set());
     setSkipped([]);
     setExcludedCount(0);
   }
 
-  /** 入力一覧から 1 件だけ外す。読み込み直しをせずに対象を絞れるようにする。 */
-  function removeEntry(id: string) {
-    setEntries((current) => current.filter((entry) => entry.id !== id));
+  /**
+   * 入力 1 件のチェックを切り替える。
+   *
+   * 一覧からは外さず、チェックが外れている間だけ圧縮対象から除く。
+   * 再読込で `id` は振り直されるため、キーには安定した `sourcePath` を使う。
+   */
+  function toggleEntryChecked(sourcePath: string, checked: boolean) {
+    setUncheckedPaths((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.delete(sourcePath);
+      } else {
+        next.add(sourcePath);
+      }
+      return next;
+    });
   }
 
   function clearResults() {
@@ -753,6 +783,9 @@ export function VideoMode({
                 count={entries.length}
                 empty={entries.length === 0}
                 loading={inputLoading}
+                summary={
+                  uncheckedCount > 0 ? <span className="summary-pill">対象 {targetEntries.length} 件</span> : undefined
+                }
                 actions={
                   <div className="subpanel-actions">
                     <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFiles}>
@@ -789,13 +822,12 @@ export function VideoMode({
                         <th>尺</th>
                         <th>サイズ</th>
                         <th>状態</th>
-                        <th className="cell-remove">操作</th>
                       </tr>
                     </thead>
                     <tbody>
                       {entries.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="empty-cell">
+                          <td colSpan={6} className="empty-cell">
                             まだファイルがありません
                           </td>
                         </tr>
@@ -804,15 +836,28 @@ export function VideoMode({
                           <tr key={entry.id}>
                             <td className="cell-path">
                               <div className="file-cell">
-                                <strong
-                                  title={entry.fileName}
-                                  className={`file-name file-name-${entry.warnings.length > 0 ? "warning" : "normal"}`}
-                                >
-                                  {entry.fileName}
-                                  {entry.warnings.length > 0 ? (
-                                    <span className="file-name-indicator">注意</span>
-                                  ) : null}
-                                </strong>
+                                {/* チェックボックスはファイル名行の中だけに置く。
+                                    file-cell 直下に並べるとパス行まで字下げされてしまう。 */}
+                                <div className="file-name-row">
+                                  <input
+                                    type="checkbox"
+                                    className="row-select"
+                                    checked={!uncheckedPaths.has(entry.sourcePath)}
+                                    disabled={inputLoading || busy}
+                                    title="圧縮を実行する対象にする"
+                                    aria-label={`${entry.fileName} を圧縮対象にする`}
+                                    onChange={(event) => toggleEntryChecked(entry.sourcePath, event.target.checked)}
+                                  />
+                                  <strong
+                                    title={entry.fileName}
+                                    className={`file-name file-name-${entry.warnings.length > 0 ? "warning" : "normal"}`}
+                                  >
+                                    {entry.fileName}
+                                    {entry.warnings.length > 0 ? (
+                                      <span className="file-name-indicator">注意</span>
+                                    ) : null}
+                                  </strong>
+                                </div>
                                 <small title={entry.sourcePath}>{entry.sourcePath}</small>
                               </div>
                             </td>
@@ -836,18 +881,6 @@ export function VideoMode({
                                   </span>
                                 ))}
                               </div>
-                            </td>
-                            <td className="cell-remove">
-                              <button
-                                type="button"
-                                className="ghost row-remove"
-                                disabled={inputLoading || busy}
-                                title="この項目を入力一覧から外す"
-                                aria-label={`${entry.fileName} を入力一覧から外す`}
-                                onClick={() => removeEntry(entry.id)}
-                              >
-                                ×
-                              </button>
                             </td>
                           </tr>
                         ))
