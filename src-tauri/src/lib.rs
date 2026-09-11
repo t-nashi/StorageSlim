@@ -570,6 +570,14 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
         warnings.push("EXIF 以外 (XMP / ICC プロファイルなど) は保持されない".to_string());
     }
 
+    // PSD へは書き戻せないため、オリジナル維持だけは成立しない。ここで止めないと
+    // 拡張子 .psd の JPEG ができてしまう。
+    if matches!(entry.format, InputFormat::Psd) && output_format == OutputFormat::Original {
+        return Err(anyhow!(
+            "PSD は出力形式に「オリジナル維持」を選べません。GIF / JPEG / PNG / WebP / AVIF のいずれかを指定してください。"
+        ));
+    }
+
     if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) && output_format == OutputFormat::Original {
         process_heif_original_copy(entry, settings, &output_path, &mut warnings)?;
     } else if entry.animated {
@@ -1124,6 +1132,11 @@ fn decode_input_image(entry: &InputEntry, decode_limit_mb: u32) -> Result<Dynami
         // HEIC / HEIF は heif-oxide 側でデコードするため、この上限は適用されない。
         InputFormat::Heic | InputFormat::Heif => decode_heif_image(Path::new(&entry.source_path)),
         InputFormat::Avif => Err(anyhow!("このビルドでは AVIF 入力の読込を一時停止しています。")),
+        // PSD も image クレートを通らないため、上限の判定はデコーダ側で行う。
+        InputFormat::Psd => psd::decode_composite(
+            Path::new(&entry.source_path),
+            decode_limit_bytes(decode_limit_mb),
+        ),
         _ => {
             let bytes = fs::read(&entry.source_path)?;
             let mut reader =
@@ -2106,3 +2119,4 @@ mod tests {
         assert!(!output_root.join("wide.webp").exists());
     }
 }
+
