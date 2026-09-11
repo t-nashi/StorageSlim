@@ -58,6 +58,7 @@ enum InputFormat {
     Avif,
     Heic,
     Heif,
+    Psd,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -373,6 +374,23 @@ fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry
         InputFormat::Avif => {
             warnings.push("AVIF 入力はこのビルドでは一時的に無効化しています。".to_string());
             (None, None, false, false)
+        }
+        InputFormat::Psd => {
+            // ヘッダと画像リソースだけを読む。統合画像はまだ展開しない。
+            let probe = psd::probe(path)?;
+            match probe.unsupported_reason() {
+                Some(reason) => {
+                    // 寸法は読めているので一覧には出す。理由を添えて実行対象から外す。
+                    warnings.push(reason);
+                    (Some(probe.width), Some(probe.height), false, false)
+                }
+                None => {
+                    warnings.push(
+                        "PSD は統合後の画像のみを読込します（レイヤーは失われます）。".to_string(),
+                    );
+                    (Some(probe.width), Some(probe.height), false, true)
+                }
+            }
         }
         _ => {
             let (w, h) = image::image_dimensions(path)
@@ -1175,6 +1193,9 @@ fn resolve_output_format(entry: &InputEntry, requested: OutputFormat) -> OutputF
             InputFormat::Webp => OutputFormat::Webp,
             InputFormat::Avif => OutputFormat::Avif,
             InputFormat::Heic | InputFormat::Heif => OutputFormat::Original,
+            // PSD へは書き戻せない。未解決のまま返し、process_one で理由付きの
+            // エラーにする。
+            InputFormat::Psd => OutputFormat::Original,
         },
         other => other,
     }
@@ -1314,6 +1335,7 @@ fn detect_input_format(path: &Path) -> Option<InputFormat> {
         "avif" => Some(InputFormat::Avif),
         "heic" => Some(InputFormat::Heic),
         "heif" => Some(InputFormat::Heif),
+        "psd" => Some(InputFormat::Psd),
         _ => None,
     }
 }
@@ -1326,6 +1348,7 @@ fn image_format_from_input(format: &InputFormat) -> Result<ImageFormat> {
         InputFormat::Webp => Ok(ImageFormat::WebP),
         InputFormat::Avif => Ok(ImageFormat::Avif),
         InputFormat::Heic | InputFormat::Heif => Err(anyhow!("HEIC / HEIF uses external decoder path")),
+        InputFormat::Psd => Err(anyhow!("PSD uses dedicated decoder path")),
     }
 }
 
@@ -1334,6 +1357,7 @@ fn output_extension(entry: &InputEntry, format: OutputFormat) -> &'static str {
         OutputFormat::Original => match entry.format {
             InputFormat::Heic => "heic",
             InputFormat::Heif => "heif",
+            InputFormat::Psd => "psd",
             _ => "bin",
         },
         OutputFormat::Gif => "gif",
@@ -1364,6 +1388,7 @@ fn format_label(format: &InputFormat) -> &'static str {
         InputFormat::Avif => "AVIF",
         InputFormat::Heic => "HEIC",
         InputFormat::Heif => "HEIF",
+        InputFormat::Psd => "PSD",
     }
 }
 
