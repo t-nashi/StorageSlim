@@ -5,7 +5,7 @@ import { QualityField } from "./QualityField";
 import { clamp } from "../lib/format";
 import {
   isResizeValueMissing,
-  metadataOptions,
+  imageMetadataOptions,
   resizeModeOptions,
   resizeUnitOptions,
   resizeValueMaxFor,
@@ -149,12 +149,12 @@ export function ImageSettingsPanel({
             メタデータ
             <InfoHint
               label="メタデータ"
-              text="保持は形式やライブラリの制約によりベストエフォートです。HEIC / HEIF のオリジナル維持コピーでは、削除と両立しない場合があります。"
+              text="撮影日のみ: 撮影日時と向きだけを残し、GPS などは落とします。保持する: EXIF をそのまま引き継ぎます（XMP / ICC プロファイルは対象外）。GIF / AVIF 出力と HEIC / HEIF 入力では EXIF を引き継げません。"
             />
           </span>
           <ChoiceGroup
             value={settings.metadataMode}
-            options={metadataOptions}
+            options={imageMetadataOptions}
             onChange={(metadataMode) => updateSettings((current) => ({ ...current, metadataMode }))}
           />
         </div>

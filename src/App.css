@@ -711,7 +711,7 @@ input:focus,
 
 .workspace-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
   align-self: stretch;
   min-width: 0;
@@ -763,10 +763,78 @@ input:focus,
   font-size: 0.82rem;
 }
 
+/*
+ * 入力側 / 出力側の 2 カラムをまとめる領域。
+ * 上段（入力先・出力先）と下段（入力一覧・結果）で同じ分割比率を共有し、
+ * その境目に絶対配置のつまみを重ねる。カラム間の余白 (--split-gap) は
+ * つまみを置いても変わらない。
+ */
+.split-area {
+  --split-gap: 14px;
+  --split-ratio: 0.5;
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--split-gap);
+  min-width: 0;
+  min-height: 0;
+}
+
+.split-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* 左カラム幅 = (領域幅 - 余白) * 比率。つまみは余白の上に重ねる。 */
+  left: calc((100% - var(--split-gap)) * var(--split-ratio));
+  width: var(--split-gap);
+  display: grid;
+  place-items: center;
+  cursor: col-resize;
+  touch-action: none;
+  /* ドロップ時のオーバーレイ (z-index: 2) より下に置く。 */
+  z-index: 1;
+}
+
+.split-handle-grip {
+  width: 2px;
+  height: 40px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  transition:
+    background 140ms ease,
+    height 140ms ease;
+}
+
+.split-handle:hover .split-handle-grip,
+.split-handle:focus-visible .split-handle-grip,
+.split-area.is-dragging .split-handle-grip {
+  background: rgba(103, 210, 255, 0.62);
+  height: 72px;
+}
+
+.split-handle:focus-visible {
+  outline: none;
+}
+
+/* 中央に吸着しているあいだは、中央であることが分かるよう色を変える。 */
+.split-area.is-snapped .split-handle:hover .split-handle-grip,
+.split-area.is-snapped.is-dragging .split-handle-grip {
+  background: rgba(255, 255, 255, 0.5);
+  height: 40px;
+}
+
+/* ドラッグ中はテキスト選択と表側のホバーを止める。 */
+.split-area.is-dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .path-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns:
+    minmax(0, calc((100% - var(--split-gap)) * var(--split-ratio)))
+    minmax(0, 1fr);
+  gap: var(--split-gap);
   min-width: 0;
 }
 
@@ -897,8 +965,10 @@ input:focus,
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns:
+    minmax(0, calc((100% - var(--split-gap)) * var(--split-ratio)))
+    minmax(0, 1fr);
+  gap: var(--split-gap);
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -1001,6 +1071,7 @@ input:focus,
   white-space: nowrap;
   flex-shrink: 0;
 }
+
 
 .skip-details {
   margin-bottom: 12px;
@@ -1127,6 +1198,43 @@ td {
      狭い画面ではここが表の最小幅を決めて横スクロールへ倒す。 */
   min-width: 180px;
   max-width: none;
+}
+
+/* チェックボックスとファイル名だけの行。パス行は file-cell 直下に残すため、
+   ここで字下げしてもパスの左端はずれない。 */
+.file-name-row {
+  display: flex;
+  align-items: center;
+  /* 詰まって押しにくくならず、名前から離れて見えない程度の間隔。 */
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 行ごとの圧縮対象チェック。既定は on で、off にすると実行時に対象から外れる。 */
+.row-select {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: #4bb3c6;
+  cursor: pointer;
+  /* align-items: center は行ボックスの中心で揃うが、フォントは上側の
+     アセンダが下側のディセンダより大きく、文字の見た目の中心は行ボックスの
+     中心より下にある。そのぶんだけ下げて光学的に揃える。 */
+  position: relative;
+  top: 1px;
+}
+
+.row-select:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* 見出しの一括選択。行のチェックと同じ見た目のまま、タイトルとの間隔だけ
+   title-inline の gap に任せる。 */
+.select-all {
+  width: 15px;
+  height: 15px;
 }
 
 .file-cell strong,
@@ -1284,6 +1392,11 @@ button:disabled {
   .path-grid,
   .run-panel {
     grid-template-columns: 1fr;
+  }
+
+  /* 1 カラムに落ちる幅では境目がないので、つまみも出さない。 */
+  .split-handle {
+    display: none;
   }
 
   .workspace-grid {

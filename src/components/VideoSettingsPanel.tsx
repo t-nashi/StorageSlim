@@ -4,7 +4,7 @@ import { InfoHint } from "./InfoHint";
 import { clamp } from "../lib/format";
 import {
   isResizeValueMissing,
-  metadataOptions,
+  videoMetadataOptions,
   resizeModeOptions,
   resizeUnitOptions,
   resizeValueMaxFor,
@@ -292,7 +292,7 @@ export function VideoSettingsPanel({
           </span>
           <ChoiceGroup
             value={settings.metadataMode}
-            options={metadataOptions}
+            options={videoMetadataOptions}
             onChange={(metadataMode) => updateSettings((current) => ({ ...current, metadataMode }))}
           />
         </div>

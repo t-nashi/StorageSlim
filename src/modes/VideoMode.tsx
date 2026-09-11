@@ -8,7 +8,8 @@ import appIconUrl from "../assets/storageslim-icon.svg";
 import { AppHeader } from "../components/AppHeader";
 import { PathPickerField } from "../components/PathPickerField";
 import { ProgressPanel } from "../components/ProgressPanel";
-import { InlineLoading, SkippedList, TablePanel, TableScroll } from "../components/TablePanel";
+import { SplitArea } from "../components/SplitArea";
+import { InlineLoading, SelectAllCheckbox, SkippedList, TablePanel, TableScroll } from "../components/TablePanel";
 import { VideoSettingsPanel } from "../components/VideoSettingsPanel";
 import { useDropTarget } from "../hooks/useDropTarget";
 import {
@@ -199,6 +200,8 @@ export function VideoMode({
   onModeChange,
   entries,
   setEntries,
+  uncheckedPaths,
+  setUncheckedPaths,
   skipped,
   setSkipped,
   excludedCount,
@@ -212,6 +215,8 @@ export function VideoMode({
   onModeChange: (next: AppMode) => void;
   entries: VideoInputEntry[];
   setEntries: Dispatch<SetStateAction<VideoInputEntry[]>>;
+  uncheckedPaths: Set<string>;
+  setUncheckedPaths: Dispatch<SetStateAction<Set<string>>>;
   skipped: SkippedItem[];
   setSkipped: Dispatch<SetStateAction<SkippedItem[]>>;
   excludedCount: number;
@@ -392,6 +397,20 @@ export function VideoMode({
     [results],
   );
 
+  /**
+   * チェックが入っている入力だけを集めたもの。
+   *
+   * 圧縮対象と進捗の総数はこちらを見る。チェックを外した入力は一覧に残すが、
+   * 処理からは完全に外す。
+   */
+  const targetEntries = useMemo(
+    () => entries.filter((entry) => !uncheckedPaths.has(entry.sourcePath)),
+    [entries, uncheckedPaths],
+  );
+  const uncheckedCount = entries.length - targetEntries.length;
+  const allChecked = entries.length > 0 && uncheckedCount === 0;
+  const someUnchecked = uncheckedCount > 0 && uncheckedCount < entries.length;
+
   const resizeValueMissing = settings ? isResizeValueMissing(settings.resize) : true;
   // 出力形式ごとに使えるエンコーダが違うため、選択中の形式で判定する。
   const formatSupport =
@@ -399,7 +418,7 @@ export function VideoMode({
   const ffmpegReady = environment?.available === true && formatSupport?.available === true;
   const notReadyMessage = environment?.message ?? formatSupport?.message ?? null;
   const canRunBatch =
-    entries.length > 0 && !busy && !inputLoading && !resizeValueMissing && ffmpegReady;
+    targetEntries.length > 0 && !busy && !inputLoading && !resizeValueMissing && ffmpegReady;
 
   async function addPaths(paths: string[]) {
     if (paths.length === 0) {
@@ -494,7 +513,7 @@ export function VideoMode({
   }
 
   async function runBatch() {
-    if (!settings || entries.length === 0 || busy) {
+    if (!settings || targetEntries.length === 0 || busy) {
       return;
     }
     if (resizeValueMissing) {
@@ -512,14 +531,14 @@ export function VideoMode({
     setErrorMessage(null);
     setProgress({
       completed: 0,
-      total: entries.length,
+      total: targetEntries.length,
       currentPath: null,
       state: "running",
       currentFilePercent: 0,
     });
     try {
       const response = await invoke<VideoProcessResponse>("process_video_batch", {
-        request: { entries, settings },
+        request: { entries: targetEntries, settings },
       });
       setResults(response.results);
     } catch (error) {
@@ -534,8 +553,32 @@ export function VideoMode({
 
   function clearInputs() {
     setEntries([]);
+    setUncheckedPaths(new Set());
     setSkipped([]);
     setExcludedCount(0);
+  }
+
+  /**
+   * 入力 1 件のチェックを切り替える。
+   *
+   * 一覧からは外さず、チェックが外れている間だけ圧縮対象から除く。
+   * 再読込で `id` は振り直されるため、キーには安定した `sourcePath` を使う。
+   */
+  /** 見出しのチェックで全行をまとめて切り替える。 */
+  function toggleAllChecked(checked: boolean) {
+    setUncheckedPaths(checked ? new Set() : new Set(entries.map((entry) => entry.sourcePath)));
+  }
+
+  function toggleEntryChecked(sourcePath: string, checked: boolean) {
+    setUncheckedPaths((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.delete(sourcePath);
+      } else {
+        next.add(sourcePath);
+      }
+      return next;
+    });
   }
 
   function clearResults() {
@@ -714,242 +757,269 @@ export function VideoMode({
             </div>
           ) : null}
 
-          <div className="path-grid">
-            <PathPickerField
-              label="入力先"
-              value={inputSourceDir}
-              placeholder="入力先フォルダ"
-              onChange={setInputSourceDir}
-              onBrowse={pickInputFolder}
-              onReset={resetInputPath}
-              load={{ disabled: inputLoading || busy, onLoad: loadInputSourceDir }}
-            />
-            <PathPickerField
-              label="出力先"
-              value={settings.customOutputDir ?? ""}
-              placeholder="出力先フォルダ"
-              onChange={(nextOutputDir) =>
-                updateSettings((current) => ({
-                  ...current,
-                  outputMode: "custom",
-                  customOutputDir: nextOutputDir,
-                }))
-              }
-              onBrowse={pickOutputFolder}
-              onReset={resetOutputPath}
-            />
-          </div>
+          <SplitArea>
+            <div className="path-grid">
+              <PathPickerField
+                label="入力先"
+                value={inputSourceDir}
+                placeholder="入力先フォルダ"
+                onChange={setInputSourceDir}
+                onBrowse={pickInputFolder}
+                onReset={resetInputPath}
+                load={{ disabled: inputLoading || busy, onLoad: loadInputSourceDir }}
+              />
+              <PathPickerField
+                label="出力先"
+                value={settings.customOutputDir ?? ""}
+                placeholder="出力先フォルダ"
+                onChange={(nextOutputDir) =>
+                  updateSettings((current) => ({
+                    ...current,
+                    outputMode: "custom",
+                    customOutputDir: nextOutputDir,
+                  }))
+                }
+                onBrowse={pickOutputFolder}
+                onReset={resetOutputPath}
+              />
+            </div>
 
-          <div className="workspace-grid">
-            <TablePanel
-              title="入力一覧"
-              count={entries.length}
-              empty={entries.length === 0}
-              loading={inputLoading}
-              actions={
-                <div className="subpanel-actions">
-                  <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFiles}>
-                    ファイル追加
-                  </button>
-                  <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFolder}>
-                    フォルダ追加
-                  </button>
+            <div className="workspace-grid">
+              <TablePanel
+                lead={
+                  <SelectAllCheckbox
+                    checked={allChecked}
+                    indeterminate={someUnchecked}
+                    disabled={entries.length === 0 || inputLoading || busy}
+                    label="すべての入力を圧縮対象にする"
+                    onChange={toggleAllChecked}
+                  />
+                }
+                title="入力一覧"
+                count={entries.length}
+                empty={entries.length === 0}
+                loading={inputLoading}
+                summary={
+                  uncheckedCount > 0 ? <span className="summary-pill">対象 {targetEntries.length} 件</span> : undefined
+                }
+                actions={
+                  <div className="subpanel-actions">
+                    <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFiles}>
+                      ファイル追加
+                    </button>
+                    <button type="button" className="ghost panel-action" disabled={inputLoading || busy} onClick={pickFolder}>
+                      フォルダ追加
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost panel-action"
+                      disabled={(entries.length === 0 && skipped.length === 0 && excludedCount === 0) || inputLoading || busy}
+                      onClick={clearInputs}
+                    >
+                      入力をクリア
+                    </button>
+                  </div>
+                }
+              >
+                {inputLoading ? <InlineLoading message="入力ファイルを読込中..." /> : null}
+                {excludedCount > 0 ? (
+                  <div className="notice">
+                    対象外の種別 {excludedCount} 件は読み込んでいません。画像は「画像圧縮」モードで処理してください。
+                  </div>
+                ) : null}
+                <SkippedList items={skipped} />
+                <TableScroll empty={entries.length === 0}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th className="cell-path">ファイル</th>
+                        <th>形式</th>
+                        <th>寸法</th>
+                        <th>尺</th>
+                        <th>サイズ</th>
+                        <th>状態</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {entries.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="empty-cell">
+                            まだファイルがありません
+                          </td>
+                        </tr>
+                      ) : (
+                        entries.map((entry) => (
+                          <tr key={entry.id}>
+                            <td className="cell-path">
+                              <div className="file-cell">
+                                {/* チェックボックスはファイル名行の中だけに置く。
+                                    file-cell 直下に並べるとパス行まで字下げされてしまう。 */}
+                                <div className="file-name-row">
+                                  <input
+                                    type="checkbox"
+                                    className="row-select"
+                                    checked={!uncheckedPaths.has(entry.sourcePath)}
+                                    disabled={inputLoading || busy}
+                                    title="圧縮を実行する対象にする"
+                                    aria-label={`${entry.fileName} を圧縮対象にする`}
+                                    onChange={(event) => toggleEntryChecked(entry.sourcePath, event.target.checked)}
+                                  />
+                                  <strong
+                                    title={entry.fileName}
+                                    className={`file-name file-name-${entry.warnings.length > 0 ? "warning" : "normal"}`}
+                                  >
+                                    {entry.fileName}
+                                    {entry.warnings.length > 0 ? (
+                                      <span className="file-name-indicator">注意</span>
+                                    ) : null}
+                                  </strong>
+                                </div>
+                                <small title={entry.sourcePath}>{entry.sourcePath}</small>
+                              </div>
+                            </td>
+                            <td>{entry.formatLabel}</td>
+                            <td>{formatDimension(entry.width, entry.height)}</td>
+                            <td>{formatDuration(entry.durationSec)}</td>
+                            <td>{formatBytes(entry.fileSize)}</td>
+                            <td>
+                              <div className="tag-list">
+                                {entry.fps != null ? (
+                                  <span className="tag subtle">{entry.fps.toFixed(entry.fps % 1 === 0 ? 0 : 2)} fps</span>
+                                ) : null}
+                                {entry.hasAudio ? (
+                                  <span className="tag subtle">{entry.audioCodec ?? "audio"}</span>
+                                ) : (
+                                  <span className="tag subtle">音声なし</span>
+                                )}
+                                {entry.warnings.map((warning) => (
+                                  <span key={warning} className="tag warning" title={warning}>
+                                    {warning}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </TableScroll>
+              </TablePanel>
+
+              <TablePanel
+                title="結果"
+                count={results.length}
+                empty={results.length === 0}
+                summary={
+                  <>
+                    <span className={`saved-inline${totalSaved < 0 ? " size-increased" : ""}`}>
+                      {totalSaved < 0 ? `増加: ${formatBytes(-totalSaved)}` : `Saved: ${formatBytes(totalSaved)}`}
+                      {totalSavedPercent != null && totalSavedPercent !== 0
+                        ? ` / ${totalSavedPercent > 0 ? "-" : "+"}${Math.abs(totalSavedPercent).toFixed(1)}%`
+                        : ""}
+                    </span>
+                    {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
+                    {interruptedCount > 0 ? (
+                      <span className="summary-pill">中断: {interruptedCount} 件</span>
+                    ) : null}
+                    {totalElapsedMs > 0 ? (
+                      <span className="summary-pill">所要: {formatElapsed(totalElapsedMs)}</span>
+                    ) : null}
+                  </>
+                }
+                actions={
                   <button
                     type="button"
                     className="ghost panel-action"
-                    disabled={(entries.length === 0 && skipped.length === 0 && excludedCount === 0) || inputLoading || busy}
-                    onClick={clearInputs}
+                    disabled={results.length === 0 || busy}
+                    onClick={clearResults}
                   >
-                    入力をクリア
+                    結果をクリア
                   </button>
-                </div>
-              }
-            >
-              {inputLoading ? <InlineLoading message="入力ファイルを読込中..." /> : null}
-              {excludedCount > 0 ? (
-                <div className="notice">
-                  対象外の種別 {excludedCount} 件は読み込んでいません。画像は「画像圧縮」モードで処理してください。
-                </div>
-              ) : null}
-              <SkippedList items={skipped} />
-              <TableScroll empty={entries.length === 0}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th className="cell-path">ファイル</th>
-                      <th>形式</th>
-                      <th>寸法</th>
-                      <th>尺</th>
-                      <th>サイズ</th>
-                      <th>状態</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {entries.length === 0 ? (
+                }
+              >
+                <TableScroll empty={results.length === 0}>
+                  <table className="data-table">
+                    <thead>
                       <tr>
-                        <td colSpan={6} className="empty-cell">
-                          まだファイルがありません
-                        </td>
+                        <th className="cell-path">入力</th>
+                        <th className="cell-path">出力</th>
+                        <th>寸法</th>
+                        <th>Original</th>
+                        <th>Optimized</th>
+                        <th>Saved</th>
+                        <th>時間</th>
+                        <th>状態</th>
                       </tr>
-                    ) : (
-                      entries.map((entry) => (
-                        <tr key={entry.id}>
-                          <td className="cell-path">
-                            <div className="file-cell">
-                              <strong
-                                title={entry.fileName}
-                                className={`file-name file-name-${entry.warnings.length > 0 ? "warning" : "normal"}`}
-                              >
-                                {entry.fileName}
-                                {entry.warnings.length > 0 ? (
-                                  <span className="file-name-indicator">注意</span>
-                                ) : null}
-                              </strong>
-                              <small title={entry.sourcePath}>{entry.sourcePath}</small>
-                            </div>
-                          </td>
-                          <td>{entry.formatLabel}</td>
-                          <td>{formatDimension(entry.width, entry.height)}</td>
-                          <td>{formatDuration(entry.durationSec)}</td>
-                          <td>{formatBytes(entry.fileSize)}</td>
-                          <td>
-                            <div className="tag-list">
-                              {entry.fps != null ? (
-                                <span className="tag subtle">{entry.fps.toFixed(entry.fps % 1 === 0 ? 0 : 2)} fps</span>
-                              ) : null}
-                              {entry.hasAudio ? (
-                                <span className="tag subtle">{entry.audioCodec ?? "audio"}</span>
-                              ) : (
-                                <span className="tag subtle">音声なし</span>
-                              )}
-                              {entry.warnings.map((warning) => (
-                                <span key={warning} className="tag warning" title={warning}>
-                                  {warning}
-                                </span>
-                              ))}
-                            </div>
+                    </thead>
+                    <tbody>
+                      {results.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="empty-cell">
+                            まだ処理結果がありません
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </TableScroll>
-            </TablePanel>
-
-            <TablePanel
-              title="結果"
-              count={results.length}
-              empty={results.length === 0}
-              summary={
-                <>
-                  <span className={`saved-inline${totalSaved < 0 ? " size-increased" : ""}`}>
-                    {totalSaved < 0 ? `増加: ${formatBytes(-totalSaved)}` : `Saved: ${formatBytes(totalSaved)}`}
-                    {totalSavedPercent != null && totalSavedPercent !== 0
-                      ? ` / ${totalSavedPercent > 0 ? "-" : "+"}${Math.abs(totalSavedPercent).toFixed(1)}%`
-                      : ""}
-                  </span>
-                  {failedCount > 0 ? <span className="summary-pill danger">失敗: {failedCount} 件</span> : null}
-                  {interruptedCount > 0 ? (
-                    <span className="summary-pill">中断: {interruptedCount} 件</span>
-                  ) : null}
-                  {totalElapsedMs > 0 ? (
-                    <span className="summary-pill">所要: {formatElapsed(totalElapsedMs)}</span>
-                  ) : null}
-                </>
-              }
-              actions={
-                <button
-                  type="button"
-                  className="ghost panel-action"
-                  disabled={results.length === 0 || busy}
-                  onClick={clearResults}
-                >
-                  結果をクリア
-                </button>
-              }
-            >
-              <TableScroll empty={results.length === 0}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th className="cell-path">入力</th>
-                      <th className="cell-path">出力</th>
-                      <th>寸法</th>
-                      <th>Original</th>
-                      <th>Optimized</th>
-                      <th>Saved</th>
-                      <th>時間</th>
-                      <th>状態</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.length === 0 ? (
-                      <tr>
-                        <td colSpan={8} className="empty-cell">
-                          まだ処理結果がありません
-                        </td>
-                      </tr>
-                    ) : (
-                      results.map((result) => (
-                        <tr key={`${result.sourcePath}-${result.outputPath ?? "error"}`}>
-                          <td className="cell-path">
-                            <div className="file-cell">
-                              <strong
-                                title={result.sourcePath.split(/[\\/]/).pop() ?? ""}
-                                className={`file-name file-name-${resultNameState(result)}`}
-                              >
-                                {result.sourcePath.split(/[\\/]/).pop()}
-                                {result.interrupted ? (
-                                  <span className="file-name-indicator">中断</span>
-                                ) : !result.success ? (
-                                  <span className="file-name-indicator">失敗</span>
-                                ) : result.warnings.length > 0 ? (
-                                  <span className="file-name-indicator">注意</span>
-                                ) : null}
-                              </strong>
-                              <small title={result.sourcePath}>{result.sourcePath}</small>
-                            </div>
-                          </td>
-                          <td className="cell-path">
-                            <div className="file-cell">
-                              <strong title={result.outputFormat ?? "-"}>{result.outputFormat ?? "-"}</strong>
-                              <small title={result.outputPath ?? result.reason ?? "-"}>
-                                {result.outputPath ?? result.reason ?? "-"}
-                              </small>
-                            </div>
-                          </td>
-                          <td>{result.success ? formatDimension(result.width, result.height) : "-"}</td>
-                          <td>{formatBytes(result.originalSize)}</td>
-                          <td>{formatBytes(result.optimizedSize)}</td>
-                          <td className={result.success && (result.savedSize ?? 0) < 0 ? "size-increased" : undefined}>
-                            {result.success ? formatSavedDelta(result.savedSize, result.savedPercent) : "-"}
-                          </td>
-                          <td>{formatElapsed(result.elapsedMs)}</td>
-                          <td>
-                            <div className="tag-list">
-                              <span
-                                className={`tag ${
-                                  result.interrupted ? "warning" : result.success ? "success" : "danger"
-                                }`}
-                              >
-                                {result.interrupted ? "中断" : result.success ? "success" : "failed"}
-                              </span>
-                              {result.warnings.map((warning) => (
-                                <span key={warning} className="tag subtle" title={warning}>
-                                  {warning}
+                      ) : (
+                        results.map((result) => (
+                          <tr key={`${result.sourcePath}-${result.outputPath ?? "error"}`}>
+                            <td className="cell-path">
+                              <div className="file-cell">
+                                <strong
+                                  title={result.sourcePath.split(/[\\/]/).pop() ?? ""}
+                                  className={`file-name file-name-${resultNameState(result)}`}
+                                >
+                                  {result.sourcePath.split(/[\\/]/).pop()}
+                                  {result.interrupted ? (
+                                    <span className="file-name-indicator">中断</span>
+                                  ) : !result.success ? (
+                                    <span className="file-name-indicator">失敗</span>
+                                  ) : result.warnings.length > 0 ? (
+                                    <span className="file-name-indicator">注意</span>
+                                  ) : null}
+                                </strong>
+                                <small title={result.sourcePath}>{result.sourcePath}</small>
+                              </div>
+                            </td>
+                            <td className="cell-path">
+                              <div className="file-cell">
+                                <strong title={result.outputFormat ?? "-"}>{result.outputFormat ?? "-"}</strong>
+                                <small title={result.outputPath ?? result.reason ?? "-"}>
+                                  {result.outputPath ?? result.reason ?? "-"}
+                                </small>
+                              </div>
+                            </td>
+                            <td>{result.success ? formatDimension(result.width, result.height) : "-"}</td>
+                            <td>{formatBytes(result.originalSize)}</td>
+                            <td>{formatBytes(result.optimizedSize)}</td>
+                            <td className={result.success && (result.savedSize ?? 0) < 0 ? "size-increased" : undefined}>
+                              {result.success ? formatSavedDelta(result.savedSize, result.savedPercent) : "-"}
+                            </td>
+                            <td>{formatElapsed(result.elapsedMs)}</td>
+                            <td>
+                              <div className="tag-list">
+                                <span
+                                  className={`tag ${
+                                    result.interrupted ? "warning" : result.success ? "success" : "danger"
+                                  }`}
+                                >
+                                  {result.interrupted ? "中断" : result.success ? "success" : "failed"}
                                 </span>
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </TableScroll>
-            </TablePanel>
-          </div>
+                                {result.warnings.map((warning) => (
+                                  <span key={warning} className="tag subtle" title={warning}>
+                                    {warning}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </TableScroll>
+              </TablePanel>
+            </div>
+          </SplitArea>
 
           {errorMessage ? <div className="notice danger">{errorMessage}</div> : null}
         </section>

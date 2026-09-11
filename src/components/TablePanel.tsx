@@ -1,13 +1,15 @@
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import type { SkippedItem } from "../types";
 
 /**
  * 入力一覧 / 結果に共通する表パネルの外枠。
  *
- * 空状態と読込中のクラス付与、見出し行（タイトル・件数・操作）までを持ち、
+ * 空状態と読込中のクラス付与、見出し行（先頭の一括操作・タイトル・件数・操作）までを持ち、
  * 表本体は children 側で組む。
  */
 export function TablePanel({
+  lead,
   title,
   count,
   empty,
@@ -16,6 +18,7 @@ export function TablePanel({
   actions,
   children,
 }: {
+  lead?: ReactNode;
   title: string;
   count: number;
   empty: boolean;
@@ -33,6 +36,7 @@ export function TablePanel({
     <section className={classNames.join(" ")}>
       <div className="subpanel-header">
         <div className="title-inline">
+          {lead}
           <h3>{title}</h3>
           <span>{count} 件</span>
           {summary}
@@ -80,5 +84,48 @@ export function SkippedList({ items }: { items: SkippedItem[] }) {
         ))}
       </div>
     </details>
+  );
+}
+
+/**
+ * 一覧の全行をまとめて選択・解除する見出しのチェックボックス。
+ *
+ * 一部だけ選択されている状態は `indeterminate` で表す。DOM の属性でしか
+ * 指定できないため、`checked` とは別に ref 経由で反映する。
+ * 押下時は「全選択済みなら全解除、それ以外は全選択」で、`indeterminate`
+ * からは必ず全選択へ向かう（よくある一括選択 UI と同じ挙動）。
+ */
+export function SelectAllCheckbox({
+  checked,
+  indeterminate,
+  disabled = false,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.indeterminate = indeterminate;
+    }
+  }, [indeterminate]);
+
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      className="row-select select-all"
+      checked={checked}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      onChange={(event) => onChange(event.target.checked)}
+    />
   );
 }

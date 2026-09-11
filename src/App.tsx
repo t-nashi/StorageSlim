@@ -26,7 +26,7 @@ function loadStoredMode(): AppMode {
 /**
  * モードの切り替えだけを持つ器。
  *
- * 入力一覧と結果はここで保持する。モードを切り替えると画面側は
+ * 入力一覧と結果、チェックを外した入力（圧縮対象から除く）はここで保持する。モードを切り替えると画面側は
  * アンマウントされるため、ここに置かないと切り替えのたびに消えてしまう
  * （`docs/decision-log.md` の `D-17`）。設定はモードごとに別のキーへ
  * 永続化するので、各モードが自分で読み書きする。
@@ -35,11 +35,13 @@ function App() {
   const [mode, setMode] = useState<AppMode>(loadStoredMode);
 
   const [imageEntries, setImageEntries] = useState<InputEntry[]>([]);
+  const [imageUncheckedPaths, setImageUncheckedPaths] = useState<Set<string>>(() => new Set());
   const [imageSkipped, setImageSkipped] = useState<SkippedItem[]>([]);
   const [imageResults, setImageResults] = useState<ProcessResultItem[]>([]);
   const [imageProgress, setImageProgress] = useState<BatchProgress>({ ...INITIAL_PROGRESS });
 
   const [videoEntries, setVideoEntries] = useState<VideoInputEntry[]>([]);
+  const [videoUncheckedPaths, setVideoUncheckedPaths] = useState<Set<string>>(() => new Set());
   const [videoSkipped, setVideoSkipped] = useState<SkippedItem[]>([]);
   const [videoExcludedCount, setVideoExcludedCount] = useState(0);
   const [videoResults, setVideoResults] = useState<VideoResultItem[]>([]);
@@ -56,6 +58,8 @@ function App() {
         onModeChange={setMode}
         entries={videoEntries}
         setEntries={setVideoEntries}
+        uncheckedPaths={videoUncheckedPaths}
+        setUncheckedPaths={setVideoUncheckedPaths}
         skipped={videoSkipped}
         setSkipped={setVideoSkipped}
         excludedCount={videoExcludedCount}
@@ -74,6 +78,8 @@ function App() {
       onModeChange={setMode}
       entries={imageEntries}
       setEntries={setImageEntries}
+      uncheckedPaths={imageUncheckedPaths}
+      setUncheckedPaths={setImageUncheckedPaths}
       skipped={imageSkipped}
       setSkipped={setImageSkipped}
       results={imageResults}
