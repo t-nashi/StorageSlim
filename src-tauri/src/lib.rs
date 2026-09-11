@@ -45,6 +45,7 @@ use std::{
 use windows_sys::Win32::{Foundation::FILETIME, Storage::FileSystem::SetFileTime};
 
 mod exif;
+mod psd;
 mod video;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
