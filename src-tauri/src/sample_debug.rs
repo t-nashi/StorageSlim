@@ -62,7 +62,7 @@ fn inspect_repo_samples_reports_expected_flags() {
 
     let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
     assert!(response.skipped.is_empty());
-    assert_eq!(response.entries.len(), 8);
+    assert_eq!(response.entries.len(), 12);
 
     let by_name: HashMap<_, _> = response
         .entries
@@ -78,6 +78,16 @@ fn inspect_repo_samples_reports_expected_flags() {
     assert!(by_name["sample-photo.jpg"].width.is_some());
     assert!(by_name["sample-graphic.png"].height.is_some());
     assert!(by_name["sample-webp.webp"].runtime_supported);
+
+    // PSD は統合画像を持つ RGB 8bit だけを対象にする。範囲外のものは寸法を
+    // 読んだうえで実行対象から外し、理由を警告として見せる。
+    assert!(by_name["sample-psd.psd"].runtime_supported);
+    assert!(by_name["sample-psd-rle.psd"].runtime_supported);
+    assert_eq!(by_name["sample-psd.psd"].width, Some(160));
+    assert!(!by_name["sample-psd-cmyk.psd"].runtime_supported);
+    assert!(!by_name["sample-psd-16bit.psd"].runtime_supported);
+    assert!(by_name["sample-psd-cmyk.psd"].warnings[0].contains("CMYK"));
+    assert!(by_name["sample-psd-16bit.psd"].warnings[0].contains("16bit"));
 }
 
 #[test]
@@ -132,4 +142,41 @@ fn repo_samples_process_or_fail_as_expected() {
     assert!(outcomes["sample-animated.gif"].as_ref().is_ok());
     assert!(outcomes["sample-heic.heic"].as_ref().is_ok());
     assert!(outcomes["sample-heif.heif"].as_ref().is_ok());
+    // PSD へは書き戻せないため、既定のオリジナル維持では必ず失敗する。
+    assert!(outcomes["sample-psd.psd"].as_ref().is_err());
+    assert!(outcomes["sample-psd-cmyk.psd"].as_ref().is_err());
+    assert!(outcomes["sample-psd-16bit.psd"].as_ref().is_err());
+}
+
+#[test]
+fn psd_samples_convert_to_webp() {
+    let sample_dir = repo_sample_dir();
+    let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
+    let output_root = temp_dir("psd-samples-output");
+    let mut settings = default_test_settings(&output_root);
+    settings.output_format = OutputFormat::Webp;
+
+    for name in ["sample-psd.psd", "sample-psd-rle.psd"] {
+        let entry = response
+            .entries
+            .iter()
+            .find(|entry| entry.file_name == name)
+            .unwrap_or_else(|| panic!("sample is missing: {name}"));
+        let result = process_one(entry, &settings, &output_root).unwrap();
+        assert_eq!((result.width, result.height), (Some(160), Some(90)));
+        assert!(result.optimized_size.unwrap() < entry.file_size);
+    }
+}
+
+#[test]
+fn psd_rle_and_raw_decode_to_the_same_pixels() {
+    // Photoshop は RLE で書き出す。ImageMagick が作るサンプルは無圧縮なので、
+    // 同じ絵の両方を突き合わせて展開結果が一致することを見る。
+    let sample_dir = repo_sample_dir();
+    let limit = decode_limit_bytes(DECODE_LIMIT_DEFAULT_MB);
+    let raw = psd::decode_composite(&sample_dir.join("sample-psd.psd"), limit).unwrap();
+    let rle = psd::decode_composite(&sample_dir.join("sample-psd-rle.psd"), limit).unwrap();
+
+    assert_eq!(raw.dimensions(), rle.dimensions());
+    assert_eq!(raw.to_rgba8().into_raw(), rle.to_rgba8().into_raw());
 }

@@ -63,6 +63,21 @@ libjpeg の `JPEG_MAX_DIMENSION` は 65,500 です。規格上の 65,535 まで�
 
 `input/sample-animated.gif` は全フレームが全面（`640x360+0+0`）なので、部分矩形フレームの不具合は検出できません。リサイズの回帰確認にはこちらを使ってください。
 
+### input/ の PSD
+
+| ファイル | 内容 | 期待結果 |
+| --- | --- | --- |
+| `sample-psd.psd` | RGB 8bit・統合画像は無圧縮 | 読込成功。ラスタ形式へ変換できる |
+| `sample-psd-rle.psd` | 同じ絵を RLE (PackBits) で格納したもの | 同上。無圧縮版と展開結果が一致する |
+| `sample-psd-cmyk.psd` | CMYK | 一覧には出るが実行対象から外れる |
+| `sample-psd-16bit.psd` | 16bit/チャンネル | 同上 |
+
+いずれも `scripts/generate-psd-samples.py` で生成できます。ImageMagick が書き出す PSD は統合画像を常に無圧縮で持つため、Photoshop が使う RLE の経路はスクリプト側で詰め直して作っています。
+
+PSD はどれも出力形式「オリジナル維持」では失敗します。PSD へは書き戻せないため、これは仕様です。
+
+なお **Photoshop が実際に書き出した PSD での確認は別途必要**です。サンプルは ImageMagick 由来のため、レイヤー効果や「互換性を優先」を外した保存など、Photoshop 固有の状態は再現できていません。
+
 ### size-increase/
 
 **形式変換で増えるもの**（項目 5・JPEG 出力で使用）
