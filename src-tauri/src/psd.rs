@@ -589,6 +589,58 @@ mod tests {
         assert!(unpack_bits(&input, &mut output).is_err());
     }
 
+    /// 画像リソースブロック 1 個分。名前は空、データは偶数へパディングされる。
+    fn resource_block(id: u16, data: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(RESOURCE_SIGNATURE);
+        bytes.extend_from_slice(&id.to_be_bytes());
+        bytes.extend_from_slice(&[0u8, 0u8]); // 空の Pascal 文字列 + パディング
+        bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    /// 画像データセクションの手前までを組み立てた PSD を一時ファイルへ書く。
+    fn write_psd_with_resources(name: &str, resources: Vec<u8>) -> std::path::PathBuf {
+        let mut bytes = header_bytes(1, 3, 8, 3);
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // カラーモードデータ: 空
+        bytes.extend_from_slice(&(resources.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&resources);
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // レイヤー & マスク情報: 空
+
+        let path = std::env::temp_dir().join(format!("storageslim-psd-{}-{}", name, std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn reads_exif_resource() {
+        let tiff = b"II\x2a\x00exif-body".to_vec();
+        let mut resources = resource_block(RESOURCE_ID_VERSION_INFO, &[0, 0, 0, 1, 1]);
+        resources.extend_from_slice(&resource_block(RESOURCE_ID_EXIF, &tiff));
+        let path = write_psd_with_resources("exif", resources);
+
+        assert_eq!(read_exif(&path), Some(tiff));
+        assert!(probe(&path).unwrap().has_composite);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn detects_missing_merged_data_flag() {
+        // hasRealMergedData = 0。「互換性を優先」を外して保存された PSD に相当する。
+        let resources = resource_block(RESOURCE_ID_VERSION_INFO, &[0, 0, 0, 1, 0]);
+        let path = write_psd_with_resources("no-merged", resources);
+
+        let probe = probe(&path).unwrap();
+        assert!(!probe.has_composite);
+        assert!(probe.unsupported_reason().unwrap().contains("互換性を優先"));
+        assert_eq!(read_exif(&path), None);
+        std::fs::remove_file(&path).unwrap();
+    }
+
     #[test]
     fn scatters_channel_rows_into_rgba() {
         let mut pixels = vec![255u8; 3 * 2 * 4];

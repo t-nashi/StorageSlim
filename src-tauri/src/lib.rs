@@ -731,12 +731,19 @@ fn read_source_exif(
         return None;
     }
 
-    let bytes = match fs::read(&entry.source_path) {
-        Ok(bytes) => bytes,
-        Err(_) => return None,
+    // PSD はファイル全体を読むとレイヤーデータまでメモリに載る。画像リソース
+    // セクションだけを直接読み、EXIF ブロックを取り出す。
+    let tiff = if matches!(entry.format, InputFormat::Psd) {
+        psd::read_exif(Path::new(&entry.source_path))?
+    } else {
+        let bytes = match fs::read(&entry.source_path) {
+            Ok(bytes) => bytes,
+            Err(_) => return None,
+        };
+        let tiff = exif::extract(&bytes, &entry.format)?;
+        drop(bytes);
+        tiff
     };
-    let tiff = exif::extract(&bytes, &entry.format)?;
-    drop(bytes);
 
     if matches!(settings.metadata_mode, MetadataMode::DateOnly) {
         let filtered = exif::keep_date_and_orientation(&tiff);

@@ -113,6 +113,7 @@ fn type_size(field_type: u16) -> Option<usize> {
 /// 入力ファイルのバイト列から EXIF（TIFF ブロブ）を取り出す。
 ///
 /// HEIC / HEIF は同梱デコーダが EXIF を露出しないため対象外。
+/// PSD はファイル全体を読まずに済ませたいため、`psd::read_exif` がパスから直接扱う。
 pub(crate) fn extract(bytes: &[u8], format: &InputFormat) -> Option<Vec<u8>> {
     match format {
         InputFormat::Jpeg => extract_from_jpeg(bytes),
