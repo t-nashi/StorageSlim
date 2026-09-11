@@ -41,12 +41,12 @@ import {
 
 const STORAGE_KEY = "storageslim.settings.v1";
 const INPUT_SOURCE_KEY = "storageslim.inputSourceDir.v1";
-const imageExtensions = new Set(["gif", "jpg", "jpeg", "png", "webp", "avif", "heic", "heif"]);
+const imageExtensions = new Set(["gif", "jpg", "jpeg", "png", "webp", "avif", "heic", "heif", "psd"]);
 
 const fileFilters = [
   {
     name: "Images",
-    extensions: ["gif", "jpg", "jpeg", "png", "webp", "avif", "heic", "heif"],
+    extensions: ["gif", "jpg", "jpeg", "png", "webp", "avif", "heic", "heif", "psd"],
   },
 ];
 
@@ -209,6 +209,7 @@ type Preflight = {
  * デコード後に必要となるピクセルバッファのおおよそのバイト数。
  * 実際の色形式はデコードするまで確定しないため、形式ごとの代表値で見積もる。
  * src-tauri 側の image クレート経由のデコードに対応する値。
+ * PSD は image クレートを通らないが、統合画像を RGBA へ展開するため同じ見積もりが使える。
  */
 function estimatedDecodeBytes(width: number, height: number, format: InputEntry["format"]): number {
   return width * height * (format === "jpeg" ? 3 : 4);
@@ -224,6 +225,7 @@ const OUTPUT_DIMENSION_LIMITS: Partial<Record<OutputFormat, { label: string; lim
 /**
  * 実際に書き出される形式を求める。Rust の resolve_output_format と対応。
  * HEIC / HEIF のオリジナル維持はコピー出力なので寸法制限を持たない (null)。
+ * PSD のオリジナル維持は成立しないため、同じく null を返して別途 danger を出す。
  */
 function resolveOutputFormat(entry: InputEntry, requested: OutputFormat): OutputFormat | null {
   if (requested !== "original") {
@@ -316,6 +318,16 @@ function computePreflight(entry: InputEntry, settings: BatchSettings | null): Pr
         detail: `デコードに約 ${formatBytes(estimated)} のメモリが必要で、上限 ${formatBytes(decodeLimitBytes)} を超えています。「品質調整・その他」のデコード上限を上げるか、対象を変えてください。`,
       });
     }
+  }
+
+  // PSD へは書き戻せないため、オリジナル維持だけは出力先が決まらない。
+  if (entry.format === "psd" && settings.outputFormat === "original") {
+    items.push({
+      level: "danger",
+      label: "PSD はオリジナル維持で出力不可",
+      detail:
+        "PSD は出力形式に「オリジナル維持」を選べません。GIF / JPEG / PNG / WebP / AVIF のいずれかを指定してください。",
+    });
   }
 
   const outputFormat = resolveOutputFormat(entry, settings.outputFormat);

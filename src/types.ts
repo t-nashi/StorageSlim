@@ -5,7 +5,8 @@ export type InputFormat =
   | "webp"
   | "avif"
   | "heic"
-  | "heif";
+  | "heif"
+  | "psd";
 
 export type OutputFormat =
   | "original"
