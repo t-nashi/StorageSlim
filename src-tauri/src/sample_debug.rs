@@ -91,32 +91,49 @@ fn inspect_repo_samples_reports_expected_flags() {
 }
 
 #[test]
-fn inspect_desktop_samples_reports_expected_flags() {
-    // 実機のデスクトップに一式を置いた環境だけで意味がある確認。
+fn inspect_desktop_samples_report_no_unexpected_skips() {
+    // 実機の入力フォルダを、そのままの中身で読めることの確認。
     // 置いていない環境（CI や別の OS）では落とさず飛ばす。
+    //
+    // このフォルダは画像モードと動画モードの双方で使う実作業用のため、中身は
+    // 入れ替わる。ファイル名や件数を固定すると、実写真を出し入れするたびに
+    // 落ちて確認の役に立たない。名前ではなく性質だけを見る。
     let Some(sample_dir) = desktop_sample_dir().filter(|dir| dir.exists()) else {
         eprintln!("skipped: desktop sample directory is not present");
         return;
     };
 
     let response = inspect_inputs_impl(vec![sample_dir.to_string_lossy().to_string()]).unwrap();
-    assert!(response.skipped.is_empty(), "skipped: {:?}", response.skipped);
-    assert_eq!(response.entries.len(), 8);
 
-    let by_name: HashMap<_, _> = response
-        .entries
-        .iter()
-        .map(|entry| (entry.file_name.as_str(), entry))
-        .collect();
+    // 動画などが同居しているため、読み飛ばし自体は起こる。問題なのは
+    // 「画像として認識できる拡張子なのに読めなかった」場合だけ。
+    for item in &response.skipped {
+        assert!(
+            detect_input_format(Path::new(&item.path)).is_none(),
+            "画像なのに読み込めなかった: {item:?}"
+        );
+    }
 
-    assert!(by_name["sample-animated.gif"].animated);
-    assert!(!by_name["sample-static.gif"].animated);
-    assert!(!by_name["sample-avif.avif"].runtime_supported);
-    assert!(by_name["sample-heic.heic"].runtime_supported);
-    assert!(by_name["sample-heif.heif"].runtime_supported);
-    assert!(by_name["sample-photo.jpg"].width.is_some());
-    assert!(by_name["sample-graphic.png"].height.is_some());
-    assert!(by_name["sample-webp.webp"].runtime_supported);
+    assert!(
+        !response.entries.is_empty(),
+        "画像が 1 件も認識されなかった: {}",
+        sample_dir.display()
+    );
+
+    for entry in &response.entries {
+        assert!(!entry.format_label.is_empty(), "形式名が空: {entry:?}");
+        if entry.runtime_supported {
+            assert!(
+                entry.width.is_some() && entry.height.is_some(),
+                "処理対象なのに寸法を読めていない: {entry:?}"
+            );
+        } else {
+            assert!(
+                !entry.warnings.is_empty(),
+                "処理対象外なのに理由が無い: {entry:?}"
+            );
+        }
+    }
 }
 
 #[test]
