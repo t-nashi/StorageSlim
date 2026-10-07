@@ -149,7 +149,7 @@ export function ImageSettingsPanel({
             メタデータ
             <InfoHint
               label="メタデータ"
-              text="撮影日のみ: 撮影日時と向きだけを残し、GPS などは落とします。保持する: EXIF をそのまま引き継ぎます（XMP / ICC プロファイルは対象外）。GIF / AVIF 出力と HEIC / HEIF 入力では EXIF を引き継げません。"
+              text="画像の向きは全設定で維持します。撮影日のみ: 撮影日時を残し、GPS などは落とします。保持する: EXIF を引き継ぎ、向き・寸法は出力に合わせます（XMP / ICC プロファイルは対象外）。GIF / AVIF 出力と HEIC / HEIF 入力では EXIF を引き継げません。"
             />
           </span>
           <ChoiceGroup

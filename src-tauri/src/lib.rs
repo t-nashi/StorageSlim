@@ -28,7 +28,7 @@ use image::{
         jpeg::JpegEncoder,
         png::{CompressionType, FilterType, PngEncoder},
     },
-    DynamicImage, GenericImageView, ImageEncoder, ImageFormat, ImageReader, Limits, Rgba,
+    metadata::Orientation, DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat, ImageReader, Limits, Rgba,
     RgbaImage,
 };
 use serde::{Deserialize, Serialize};
@@ -388,12 +388,17 @@ fn inspect_single(path: &Path, root: &Path, relative: &str) -> Result<InputEntry
                     warnings.push(
                         "PSD は統合後の画像のみを読込します（レイヤーは失われます）。".to_string(),
                     );
-                    (Some(probe.width), Some(probe.height), false, true)
+                    let orientation = psd::read_exif(path)
+                        .as_deref()
+                        .and_then(Orientation::from_exif_chunk)
+                        .unwrap_or(Orientation::NoTransforms);
+                    let (w, h) = oriented_dimensions(probe.width, probe.height, orientation);
+                    (Some(w), Some(h), false, true)
                 }
             }
         }
         _ => {
-            let (w, h) = image::image_dimensions(path)
+            let (w, h) = display_image_dimensions(path)
                 .with_context(|| format!("failed to read image dimensions: {}", path.display()))?;
             (Some(w), Some(h), false, true)
         }
@@ -578,8 +583,9 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
         ));
     }
 
-    if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) && output_format == OutputFormat::Original {
+    let processed_dimensions = if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) && output_format == OutputFormat::Original {
         process_heif_original_copy(entry, settings, &output_path, &mut warnings)?;
+        None
     } else if entry.animated {
         if output_format != OutputFormat::Gif {
             return Err(anyhow!(
@@ -587,9 +593,10 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
             ));
         }
         process_animated_gif(entry, settings, &output_path, &mut warnings)?;
+        None
     } else {
-        process_static_image(entry, settings, output_format, &output_path, &mut warnings)?;
-    }
+        Some(process_static_image(entry, settings, output_format, &output_path, &mut warnings)?)
+    };
 
     apply_timestamps(entry, settings, &output_path)?;
 
@@ -602,7 +609,10 @@ fn process_one(entry: &InputEntry, settings: &BatchSettings, output_root: &Path)
     } else {
         (saved_size as f64 / entry.file_size as f64) * 100.0
     };
-    let (width, height) = read_output_dimensions(entry, output_format, &output_path)
+    // 静止画は補正・リサイズ後の実寸を返す。出力を再デコードできない形式でも
+    // 結果一覧の寸法が入力へ戻ってしまわないようにする。
+    let (width, height) = processed_dimensions
+        .or_else(|| read_output_dimensions(entry, output_format, &output_path).ok())
         .unwrap_or((entry.width.unwrap_or(0), entry.height.unwrap_or(0)));
 
     Ok(ProcessResultItem {
@@ -677,12 +687,14 @@ fn process_static_image(
     output_format: OutputFormat,
     output_path: &Path,
     warnings: &mut Vec<String>,
-) -> Result<()> {
+) -> Result<(u32, u32)> {
     // デコードより先に取り出し、元ファイルのバイト列を手放してから画像を読む。
     // 元ファイルとデコード後の画像を同時にメモリへ載せないため。
-    let source_exif = read_source_exif(entry, settings, warnings);
+    let (orientation, source_exif) = read_source_exif(entry, settings, warnings);
 
-    let image = decode_input_image(entry, settings.decode_limit_mb)?;
+    let mut image = decode_input_image(entry, settings.decode_limit_mb)?;
+    // メタデータを削除する場合も、表示方向は画素へ反映して維持する。
+    image.apply_orientation(orientation);
     let resized = resize_dynamic_image(image, &settings.resize);
     let (width, height) = resized.dimensions();
     check_encoder_dimensions(width, height, output_format, warnings)?;
@@ -703,57 +715,80 @@ fn process_static_image(
     // EXIF を足したあとの大きさで比べる。埋め込み分だけ出力は大きくなる。
     if can_fall_back_to_source_copy(entry, settings, encoded.len() as u64) {
         warnings.push("再圧縮すると大きくなるため元ファイルをコピー".to_string());
-        return copy_source_as_output(entry, output_path);
+        return copy_source_as_output(entry, output_path).map(|_| (width, height));
     }
 
     fs::write(output_path, encoded)
         .with_context(|| format!("failed to write output: {}", output_path.display()))?;
 
-    Ok(())
+    Ok((width, height))
 }
 
 /// メタデータ設定に応じて、元ファイルから埋め戻す EXIF を用意する。
 ///
-/// 取り出せない・入っていない場合は `None`。EXIF が無いことは失敗ではないため、
-/// エラーにはせず警告に落とす。
+/// 表示方向は削除設定でも取得する。EXIF が無い場合は通常向きとして扱う。
+/// 埋め戻す EXIF が無い場合はタプルの第2要素を `None` にする。
 fn read_source_exif(
     entry: &InputEntry,
     settings: &BatchSettings,
     warnings: &mut Vec<String>,
-) -> Option<Vec<u8>> {
-    if matches!(settings.metadata_mode, MetadataMode::Strip) {
-        return None;
-    }
-
+) -> (Orientation, Option<Vec<u8>>) {
     // 同梱の HEIF デコーダは EXIF を露出しないため取り出せない。
     if matches!(entry.format, InputFormat::Heic | InputFormat::Heif) {
-        warnings.push("HEIC / HEIF からは EXIF を取り出せないため撮影日時は引き継がれない".to_string());
-        return None;
+        if !matches!(settings.metadata_mode, MetadataMode::Strip) {
+            warnings.push("HEIC / HEIF からは EXIF を取り出せないため撮影日時は引き継がれない".to_string());
+        }
+        // irot / imir は HEIF デコーダが適用済み。追加の回転をしない。
+        return (Orientation::NoTransforms, None);
     }
 
     // PSD はファイル全体を読むとレイヤーデータまでメモリに載る。画像リソース
     // セクションだけを直接読み、EXIF ブロックを取り出す。
     let tiff = if matches!(entry.format, InputFormat::Psd) {
-        psd::read_exif(Path::new(&entry.source_path))?
+        psd::read_exif(Path::new(&entry.source_path))
+    } else if matches!(entry.format, InputFormat::Jpeg | InputFormat::Png | InputFormat::Webp) {
+        fs::read(&entry.source_path)
+            .ok()
+            .and_then(|bytes| exif::extract(&bytes, &entry.format))
     } else {
-        let bytes = match fs::read(&entry.source_path) {
-            Ok(bytes) => bytes,
-            Err(_) => return None,
-        };
-        let tiff = exif::extract(&bytes, &entry.format)?;
-        drop(bytes);
-        tiff
+        None
     };
+    let Some(mut tiff) = tiff else {
+        return (Orientation::NoTransforms, None);
+    };
+    // 画素へ反映する向きを取り出し、保持する EXIF は通常向きへ戻す。
+    // 元の回転タグを残すと、ビューアで再び回転されてしまう。
+    let orientation = Orientation::remove_from_exif_chunk(&mut tiff)
+        .unwrap_or(Orientation::NoTransforms);
+    if matches!(settings.metadata_mode, MetadataMode::Strip) {
+        return (orientation, None);
+    }
 
     if matches!(settings.metadata_mode, MetadataMode::DateOnly) {
         let filtered = exif::keep_date_and_orientation(&tiff);
         if filtered.is_none() {
             warnings.push("元ファイルに撮影日時が入っていない".to_string());
         }
-        return filtered;
+        return (orientation, filtered);
     }
 
-    Some(tiff)
+    (orientation, Some(tiff))
+}
+
+/// 一覧・リサイズ指定には、EXIF の回転を適用した表示寸法を使う。
+fn oriented_dimensions(width: u32, height: u32, orientation: Orientation) -> (u32, u32) {
+    match orientation {
+        Orientation::Rotate90 | Orientation::Rotate270
+        | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH => (height, width),
+        _ => (width, height),
+    }
+}
+
+fn display_image_dimensions(path: &Path) -> Result<(u32, u32)> {
+    let mut decoder = ImageReader::open(path)?.with_guessed_format()?.into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    let orientation = decoder.orientation()?;
+    Ok(oriented_dimensions(width, height, orientation))
 }
 
 /// エンコード結果をいったんメモリ上に組み立てて返す。
@@ -1185,7 +1220,7 @@ fn read_output_dimensions(entry: &InputEntry, output_format: OutputFormat, path:
             let image = decode_avif_image(path)?;
             Ok(image.dimensions())
         }
-        _ => image::image_dimensions(path).map_err(Into::into),
+        _ => display_image_dimensions(path),
     }
 }
 
@@ -1536,6 +1571,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod sample_debug;
+
+#[cfg(test)]
+mod orientation_tests;
 
 #[cfg(test)]
 mod tests {

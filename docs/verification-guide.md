@@ -276,6 +276,38 @@ failed to decode image: Memory limit exceeded
 
 ---
 
+## 7-1. 静止画の表示方向（2026-10-04）
+
+JPEG / PNG / WebP / PSD の EXIF Orientation はリサイズ前に画素へ反映します。メタデータを削除しても向きが保たれ、保持する場合は向きタグが通常向き（1）へ正規化されます。HEIC / HEIF のコンテナ回転・反転はデコーダが適用します。
+
+プロジェクトルートから以下を実行します（PowerShell / bash 共通）。
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+```
+
+`orientation_tests` の検証対象:
+
+- JPEG / PNG / WebP / PSD の8方向 × EXIF の両バイトオーダー × メタデータ3設定。PNG 出力の全画素を、手で定義した表示順と比較する。
+- JPEG / PNG / WebP / GIF / AVIF 出力 × メタデータ3設定 × リサイズ5設定。AVIF 以外は寸法と特徴点の画素も再読込して確認する。
+- HEIC / HEIF のコンテナ回転・反転が一度だけ適用されること。元の同梱サンプルへ irot / imir と関連付けを追加し、圧縮データ位置も補正して作る。
+- 向きタグの欠落・不正値・壊れた EXIF では余分な回転をしないこと。
+- 再圧縮で膨らむ場合の元ファイルコピーでも、結果一覧に表示寸法が返ること。
+
+AVIF はアプリの入力デコーダが一時停止中のため、テストが OS の一時フォルダ `storageslim-orientation-outputs-<PID>` に生成した15ファイルを別デコーダ（例: AVIF 対応 Pillow）で開いて確認します。リサイズなしは40×60、その他は20×30。左上側の中心画素は約150、右下側は約80のグレースケールです。2026-10-04 に Pillow で全15ケースの寸法と画素を確認済みです。
+
+ユーザー提供の問題写真はリポジトリへ保存しません。6192×4128 / Orientation=8 の元 JPG を指定して検証する場合は、プロジェクトルートで以下を実行します。
+
+```powershell
+$env:STORAGESLIM_ORIENTATION_SAMPLE = '<元のJPGの絶対パス>'
+$env:STORAGESLIM_ORIENTATION_OUTPUT = Join-Path (Get-Location) 'src-tauri/target/orientation-check'
+cargo test --manifest-path src-tauri/Cargo.toml --lib real_photo_preserves_portrait_orientation -- --ignored --nocapture
+```
+
+bash / zsh では `STORAGESLIM_ORIENTATION_SAMPLE='/path/to/photo.JPG' STORAGESLIM_ORIENTATION_OUTPUT="$PWD/src-tauri/target/orientation-check" cargo test --manifest-path src-tauri/Cargo.toml --lib real_photo_preserves_portrait_orientation -- --ignored --nocapture` と指定します。
+
+期待結果は3設定とも1000×1500で正立し、`mode-0` は EXIF なし、`mode-1` / `mode-2` は Orientation=1 です。実写真のテストが終了するまで次の同一ターゲットのビルド・再リンクを待ちます（Windows は実行中のテスト EXE を上書きできません）。
+
 ## 8. 動画圧縮モード
 
 `docs/requirements-video.md` の Phase 1 分の確認です。サンプルの作り方は `samples/video/README.md` にあります。
